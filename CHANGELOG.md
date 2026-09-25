@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.14] - 2026-09-25
+
+### Fixed
+
+- Apply coverage include/ignore filters to stats history so `history.json` and `history.svg` match badge coverage metrics.
+
 ## [1.9.13] - 2026-09-24
 
 ### Changed

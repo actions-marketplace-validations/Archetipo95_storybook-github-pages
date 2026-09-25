@@ -32,7 +32,7 @@ permissions:
 
 jobs:
   deploy-storybook:
-    uses: Archetipo95/storybook-github-pages/.github/workflows/deploy-storybook.yml@v1.9.13
+    uses: Archetipo95/storybook-github-pages/.github/workflows/deploy-storybook.yml@v1.9.14
     with:
       path: 'storybook-static'
       package_manager: 'npm'

@@ -237,6 +237,8 @@ runs:
       env:
         SB_PATH: ${{ env.SB_PATH }}
         SB_STATS_DIRECTORY: ${{ env.SB_STATS_DIRECTORY }}
+        SB_COVERAGE_INCLUDE_PATHS: ${{ env.SB_COVERAGE_INCLUDE_PATHS }}
+        SB_COVERAGE_IGNORE_PATHS: ${{ env.SB_COVERAGE_IGNORE_PATHS }}
         SB_SITE_URL: ${{ env.SB_SITE_URL }}
         SB_BASE_PATH: ${{ env.SB_BASE_PATH }}
         WORKSPACE_ROOT: ${{ github.workspace }}

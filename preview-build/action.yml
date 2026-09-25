@@ -181,6 +181,8 @@ runs:
       env:
         SOURCE_PATH: ${{ inputs.source_path }}
         SB_STATS_DIRECTORY: ${{ inputs.stats_directory || 'stats' }}
+        SB_COVERAGE_INCLUDE_PATHS: ${{ inputs.coverage_include_paths || '' }}
+        SB_COVERAGE_IGNORE_PATHS: ${{ inputs.coverage_ignore_paths || '' }}
         WORKSPACE_ROOT: ${{ github.workspace }}
         GITHUB_SHA: ${{ inputs.head_sha }}
       run: node "${{ github.action_path }}/../src/generate-stats.js" "$SOURCE_PATH" "$WORKSPACE_ROOT"

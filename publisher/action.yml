@@ -88,6 +88,8 @@ runs:
         SOURCE_PATH: ${{ inputs.source_directory }}
         PAGES_REPO: ${{ inputs.pages_repo }}
         SB_STATS_DIRECTORY: ${{ inputs.stats_directory || 'stats' }}
+        SB_COVERAGE_INCLUDE_PATHS: ${{ inputs.coverage_include_paths || '' }}
+        SB_COVERAGE_IGNORE_PATHS: ${{ inputs.coverage_ignore_paths || '' }}
         SB_SITE_URL: ${{ inputs.site_url || '' }}
         SB_BASE_PATH: ${{ inputs.base_path || '' }}
         WORKSPACE_ROOT: ${{ github.workspace }}

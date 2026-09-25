@@ -38,7 +38,7 @@ body:
       description: Provide the relevant section of your GitHub Actions workflow file.
       render: yaml
       placeholder: |
-        uses: Archetipo95/storybook-github-pages@v1.9.13
+        uses: Archetipo95/storybook-github-pages@v1.9.14
         with:
           path: 'storybook-static'
           build_command: 'npm run build-storybook'

@@ -1,6 +1,6 @@
 {
   "name": "storybook-github-pages",
-  "version": "1.9.13",
+  "version": "1.9.14",
   "description": "Deploy Storybook to GitHub Pages with secure reusable workflows and Bitovi compatibility",
   "main": "src/config.js",
   "type": "module",

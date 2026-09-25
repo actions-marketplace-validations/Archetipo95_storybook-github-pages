@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   deploy-storybook:
-    uses: Archetipo95/storybook-github-pages/.github/workflows/deploy-storybook.yml@v1.9.13
+    uses: Archetipo95/storybook-github-pages/.github/workflows/deploy-storybook.yml@v1.9.14
     with:
       path: 'storybook-static'
       package_manager: 'npm'
@@ -53,7 +53,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Build and Deploy Storybook
-        uses: Archetipo95/storybook-github-pages@v1.9.13
+        uses: Archetipo95/storybook-github-pages@v1.9.14
         with:
           path: 'storybook-static'
           build_command: 'npm run build-storybook'
@@ -123,7 +123,7 @@ jobs:
           fetch-depth: 0
 
       - name: Publish directory
-        uses: Archetipo95/storybook-github-pages/publisher@v1.9.13
+        uses: Archetipo95/storybook-github-pages/publisher@v1.9.14
         with:
           pages_repo: ${{ github.workspace }}/pages-repo
           source_directory: ${{ github.workspace }}/storybook-static
@@ -143,7 +143,7 @@ jobs:
 | **Runner OS**        | GitHub-hosted Linux (`ubuntu-latest`)                                                    | Tested on `ubuntu-latest` with Node.js 20+                                                                        |
 | **Node.js Runtime**  | Node.js 20+                                                                              | Zero external npm dependencies (uses native Node.js ES modules)                                                   |
 | **Package Managers** | Reusable workflow: `npm`, `yarn`, `pnpm`, `bun`; composite action: `npm`, `yarn`, `pnpm` | Bun is provisioned only in the reusable workflow's read-only build job                                            |
-| **Tagging Strategy** | Immutable release tags (for example, `@v1.9.13`)                                         | **Recommended for stable, reproducible use.** Floating major tags (e.g. `@v1`) are optional and non-reproducible. |
+| **Tagging Strategy** | Immutable release tags (for example, `@v1.9.14`)                                         | **Recommended for stable, reproducible use.** Floating major tags (e.g. `@v1`) are optional and non-reproducible. |
 
 ---
 

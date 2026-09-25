@@ -500,6 +500,8 @@ export function generateStatsGraph({
   basePath = '',
   commitSha = process.env.GITHUB_SHA || '',
   currentSnapshot = null,
+  includePaths = [],
+  ignorePaths = [],
   theme = 'auto'
 } = {}) {
   if (!staticDir || typeof staticDir !== 'string') {
@@ -572,7 +574,7 @@ export function generateStatsGraph({
         docsCount: Number(currentSnapshot.docs || 0),
         storybookVersion: currentSnapshot.version || ''
       }
-    : extractStorybookMetrics(staticAbs, workspaceRoot);
+    : extractStorybookMetrics(staticAbs, workspaceRoot, { includePaths, ignorePaths });
 
   const snapshotForLedger = currentSnapshot || {
     timestamp: new Date().toISOString(),
@@ -637,6 +639,8 @@ if (process.argv[1] && process.argv[1].endsWith('generate-stats.js')) {
   const siteUrl = process.env.SB_SITE_URL || '';
   const basePath = process.env.SB_BASE_PATH || '';
   const commitSha = process.env.GITHUB_SHA || '';
+  const includePaths = process.env.SB_COVERAGE_INCLUDE_PATHS || '';
+  const ignorePaths = process.env.SB_COVERAGE_IGNORE_PATHS || '';
 
   try {
     const result = generateStatsGraph({
@@ -646,7 +650,9 @@ if (process.argv[1] && process.argv[1].endsWith('generate-stats.js')) {
       statsDirectory: statsDir,
       siteUrl,
       basePath,
-      commitSha
+      commitSha,
+      includePaths,
+      ignorePaths
     });
 
     console.log(`✅ Hand-drawn growth graph generated in "${result.outDir}":`);

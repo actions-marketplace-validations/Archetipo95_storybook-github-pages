@@ -92,12 +92,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      # Replace with your real install/build commands (or the main `Archetipo95/storybook-github-pages@v1.9.13`
+      # Replace with your real install/build commands (or the main `Archetipo95/storybook-github-pages@v1.9.14`
       # composite action with `publish: 'false'`) so `storybook-static` contains your actual build output.
       - run: npm ci && npm run build-storybook
 
       - name: Package and upload preview bundle
-        uses: Archetipo95/storybook-github-pages/preview-build@v1.9.13
+        uses: Archetipo95/storybook-github-pages/preview-build@v1.9.14
         with:
           source_path: storybook-static # your built static Storybook output directory
 ```
@@ -120,7 +120,7 @@ permissions:
 
 jobs:
   publish:
-    uses: Archetipo95/storybook-github-pages/.github/workflows/pr-preview-publish.yml@v1.9.13
+    uses: Archetipo95/storybook-github-pages/.github/workflows/pr-preview-publish.yml@v1.9.14
     with:
       pages_branch: 'gh-pages'
 ```
@@ -165,7 +165,7 @@ permissions:
 
 jobs:
   publish:
-    uses: Archetipo95/storybook-github-pages/.github/workflows/pr-preview-publish.yml@v1.9.13
+    uses: Archetipo95/storybook-github-pages/.github/workflows/pr-preview-publish.yml@v1.9.14
     with:
       preview_root: '' # optional: override preview root; defaults to .storybook-pages.yml or 'pr-preview'
       pages_branch: 'gh-pages'
@@ -210,7 +210,7 @@ steps:
       token: ${{ secrets.GITHUB_TOKEN }}
 
   - name: Validate provenance and publish preview
-    uses: Archetipo95/storybook-github-pages/preview-publisher@v1.9.13
+    uses: Archetipo95/storybook-github-pages/preview-publisher@v1.9.14
     with:
       bundle_dir: ${{ runner.temp }}/preview-bundle
       pages_repo: pages-repo
@@ -253,7 +253,7 @@ permissions:
 
 jobs:
   cleanup:
-    uses: Archetipo95/storybook-github-pages/.github/workflows/pr-preview-cleanup.yml@v1.9.13
+    uses: Archetipo95/storybook-github-pages/.github/workflows/pr-preview-cleanup.yml@v1.9.14
     with:
       preview_root: '' # optional: override preview root; defaults to .storybook-pages.yml or 'pr-preview'
       pages_branch: 'gh-pages'
@@ -270,7 +270,7 @@ steps:
       path: pages-repo
       token: ${{ secrets.GITHUB_TOKEN }}
   - name: Remove preview directory
-    uses: Archetipo95/storybook-github-pages/preview-cleanup@v1.9.13
+    uses: Archetipo95/storybook-github-pages/preview-cleanup@v1.9.14
     with:
       pages_repo: pages-repo
       pages_branch: gh-pages
@@ -301,7 +301,7 @@ permissions:
 
 jobs:
   janitor:
-    uses: Archetipo95/storybook-github-pages/.github/workflows/pr-preview-janitor.yml@v1.9.13
+    uses: Archetipo95/storybook-github-pages/.github/workflows/pr-preview-janitor.yml@v1.9.14
     with:
       preview_root: ''
       pages_branch: 'gh-pages'
@@ -319,7 +319,7 @@ steps:
       path: pages-repo
       token: ${{ secrets.GITHUB_TOKEN }}
   - name: Prune stale previews
-    uses: Archetipo95/storybook-github-pages/preview-janitor@v1.9.13
+    uses: Archetipo95/storybook-github-pages/preview-janitor@v1.9.14
     with:
       pages_repo: pages-repo
       pages_branch: gh-pages

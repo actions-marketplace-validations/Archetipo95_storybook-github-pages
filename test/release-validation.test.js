@@ -15,6 +15,25 @@ function readDocs(...files) {
   return files.map(file => fs.readFileSync(path.join(process.cwd(), file), 'utf8')).join('\n');
 }
 
+function walkFiles(dir) {
+  const root = process.cwd();
+  const abs = path.join(root, dir);
+  if (!fs.existsSync(abs)) return [];
+  return fs.readdirSync(abs, { withFileTypes: true }).flatMap(entry => {
+    const entryPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) return walkFiles(entryPath);
+    return [entryPath];
+  });
+}
+
+function releaseRefFiles() {
+  return [
+    'README.md',
+    ...walkFiles('docs').filter(file => file.endsWith('.md')),
+    ...walkFiles('.github').filter(file => /\.(ya?ml|md)$/.test(file))
+  ];
+}
+
 test('release validation - package.json runtime dependency cleanliness', () => {
   const pkgPath = path.join(process.cwd(), 'package.json');
   const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
@@ -135,6 +154,18 @@ test('release validation - immutable release tag recommended in docs and issue t
     new RegExp(`uses:\\s*Archetipo95/storybook-github-pages@${releaseTagPattern().source}`),
     `Bug report template must use immutable release tag @v${releaseVersion()}`
   );
+});
+
+test('release validation - all documented own-action release refs use current version', () => {
+  const currentTag = `v${releaseVersion()}`;
+  const staleRefs = releaseRefFiles().flatMap(file => {
+    const content = fs.readFileSync(path.join(process.cwd(), file), 'utf8');
+    return [...content.matchAll(/Archetipo95\/storybook-github-pages(?:\/[A-Za-z0-9_.\/-]+)?@(v\d+\.\d+\.\d+)/g)]
+      .filter(match => match[1] !== currentTag)
+      .map(match => `${file}: ${match[0]}`);
+  });
+
+  assert.deepEqual(staleRefs, [], `Found stale documented storybook-github-pages refs:\n${staleRefs.join('\n')}`);
 });
 
 test('release validation - package manager validation documents Bun workflow-only support', () => {

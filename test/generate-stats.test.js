@@ -177,6 +177,42 @@ test('generateStatsGraph creates history.json and history.svg in static output d
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
+test('generateStatsGraph applies coverage ignore paths to the component denominator', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-stats-ignore-test-'));
+  const staticDir = path.join(tmpDir, 'storybook-static');
+  fs.mkdirSync(path.join(staticDir), { recursive: true });
+  fs.mkdirSync(path.join(tmpDir, 'src', 'components', 'Icons'), { recursive: true });
+  fs.writeFileSync(path.join(tmpDir, 'src', 'components', 'Button.vue'), '<template><button /></template>');
+  fs.writeFileSync(path.join(tmpDir, 'src', 'components', 'Icons', 'Arrow.vue'), '<template><svg /></template>');
+
+  fs.writeFileSync(
+    path.join(staticDir, 'index.json'),
+    JSON.stringify({
+      entries: {
+        'button--primary': { id: 'button--primary', title: 'Components/Button', type: 'story' }
+      }
+    }),
+    'utf8'
+  );
+
+  const result = generateStatsGraph({
+    staticDir,
+    workspaceRoot: tmpDir,
+    ignorePaths: 'src/components/Icons/**'
+  });
+
+  assert.equal(result.metrics.componentsCount, 1);
+  assert.equal(result.metrics.totalComponents, 1);
+  assert.equal(result.metrics.coveragePercent, 100);
+
+  const savedHistory = JSON.parse(fs.readFileSync(result.historyJsonPath, 'utf8'));
+  assert.equal(savedHistory[0].components, 1);
+  assert.equal(savedHistory[0].totalComponents, 1);
+  assert.equal(savedHistory[0].coveragePercent, 100);
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
 test('generateStatsGraph loads prior history from pagesRepo', () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-stats-pages-test-'));
   const staticDir = path.join(tmpDir, 'storybook-static');
