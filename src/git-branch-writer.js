@@ -2,8 +2,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
-const LOCK_NAME = '.storybook-pages-write.lock';
+export const WRITE_LOCK_NAME = '.storybook-pages-write.lock';
 const RETRIES = 3;
+const PAGES_BUILD_TIMEOUT_MS = 120000;
+const PAGES_BUILD_POLL_INTERVAL_MS = 2000;
 
 export function run(command, args, cwd) {
   return new Promise((resolve, reject) => {
@@ -24,7 +26,7 @@ export function run(command, args, cwd) {
 }
 
 export async function acquireLock(repo, timeoutMs = 120000) {
-  const lock = path.join(repo, LOCK_NAME);
+  const lock = path.join(repo, WRITE_LOCK_NAME);
   const started = Date.now();
   while (true) {
     try {
@@ -39,19 +41,65 @@ export async function acquireLock(repo, timeoutMs = 120000) {
   }
 }
 
-export async function requestPagesRebuild({ token, repository }) {
-  if (!token || !repository) return;
-  const response = await fetch(`https://api.github.com/repos/${repository}/pages/builds`, {
+function pagesHeaders(token) {
+  return {
+    authorization: `token ${token}`,
+    accept: 'application/vnd.github+json',
+    'content-type': 'application/json'
+  };
+}
+
+async function responseError(response) {
+  const text = typeof response.text === 'function' ? await response.text() : '';
+  return text ? `: ${text}` : '';
+}
+
+export async function requestPagesRebuild({
+  token,
+  repository,
+  commitSha,
+  timeoutMs = PAGES_BUILD_TIMEOUT_MS,
+  pollIntervalMs = PAGES_BUILD_POLL_INTERVAL_MS
+}) {
+  if (!token || !repository || !commitSha) {
+    throw new Error('Pages rebuild verification requires a GitHub token, repository, and pushed commit SHA');
+  }
+
+  const url = `https://api.github.com/repos/${repository}/pages/builds`;
+  const headers = pagesHeaders(token);
+  const response = await fetch(url, {
     method: 'POST',
-    headers: {
-      authorization: `token ${token}`,
-      accept: 'application/vnd.github+json',
-      'content-type': 'application/json'
-    }
+    headers
   });
   if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    throw new Error(`Pages rebuild request failed (${response.status}) after a successful push: ${text}`);
+    throw new Error(
+      `Pages rebuild request failed (${response.status}) after pushing ${commitSha}${await responseError(response)}`
+    );
+  }
+
+  const started = Date.now();
+  while (true) {
+    const buildsResponse = await fetch(`${url}?per_page=100`, { headers });
+    if (!buildsResponse.ok) {
+      throw new Error(
+        `Pages build verification failed (${buildsResponse.status}) for pushed commit ${commitSha}${await responseError(buildsResponse)}`
+      );
+    }
+    const builds = await buildsResponse.json();
+    if (!Array.isArray(builds)) {
+      throw new Error(`Pages build verification returned an invalid response for pushed commit ${commitSha}`);
+    }
+    const build = builds.find(item => item.commit === commitSha || item.commit?.sha === commitSha);
+    if (build?.status === 'errored') {
+      const detail = build.error?.message ? `: ${build.error.message}` : '';
+      throw new Error(`Pages build for pushed commit ${commitSha} failed${detail}`);
+    }
+    if (build?.status === 'built') return build;
+    if (Date.now() - started >= timeoutMs) {
+      const status = build ? `; last status: ${build.status || 'unknown'}` : '';
+      throw new Error(`Timed out waiting for a Pages build for pushed commit ${commitSha}${status}`);
+    }
+    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
   }
 }
 
@@ -93,8 +141,9 @@ export async function withSerializedBranchWrite({ repo, branch, mutate, commitMe
           throw error;
         });
         if (!committed) return { changed: false };
+        const commitSha = await run('git', ['rev-parse', 'HEAD'], repo);
         await run('git', ['push', 'origin', `HEAD:${branch}`], repo);
-        return { changed: true };
+        return { changed: true, commitSha };
       } catch (error) {
         lastError = error;
         if (attempt + 1 < RETRIES) await run('git', ['rebase', `origin/${branch}`], repo).catch(() => {});

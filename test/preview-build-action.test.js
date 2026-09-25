@@ -18,10 +18,19 @@ function makeStorybookSource() {
   return sourceDir;
 }
 
+function makeGitHubFiles(prefix) {
+  const tempDir = makeTempDir(prefix);
+  const outputFilePath = path.join(tempDir, 'github_output');
+  const summaryFilePath = path.join(tempDir, 'github_step_summary');
+  fs.writeFileSync(outputFilePath, '');
+  fs.writeFileSync(summaryFilePath, '');
+  return { outputFilePath, summaryFilePath };
+}
+
 function extractConfigStepScript() {
   const content = fs.readFileSync(path.join(process.cwd(), 'preview-build/action.yml'), 'utf8');
   const stepMatch = content.match(
-    /- name: Resolve bundle configuration[\s\S]*?run: \|\n([\s\S]*?)\n\n    - name: Validate static Storybook output/
+    /- name: Resolve bundle configuration[\s\S]*?run: \|\n([\s\S]*?)\n\n    - name: Run Storybook smoke test/
   );
   assert.ok(stepMatch, 'could not locate the "Resolve bundle configuration" step script in preview-build/action.yml');
   return stepMatch[1];
@@ -123,12 +132,26 @@ test('preview-build reference workflow dogfoods the public action instead of inl
   );
 });
 
+test('pr-preview-build reference workflow exercises the opt-in Playwright smoke-test gate on both public actions', () => {
+  const content = fs.readFileSync(path.join(process.cwd(), '.github/workflows/pr-preview-build.yml'), 'utf8');
+
+  const rootActionStep = content.match(/uses:\s*\.\/\n([\s\S]*?)(?=\n {6}- name:|\n {2}- name:|$)/);
+  assert.ok(rootActionStep, 'could not locate the root composite action ("uses: ./") step');
+  assert.match(rootActionStep[1], /smoke_test:\s*'true'/, 'root composite action step must enable smoke_test');
+
+  const previewBuildStep = content.match(/uses:\s*\.\/preview-build\n([\s\S]*?)$/);
+  assert.ok(previewBuildStep, 'could not locate the preview-build composite action step');
+  assert.match(
+    previewBuildStep[1],
+    /smoke_test:\s*'true'/,
+    'preview-build composite action step must enable smoke_test'
+  );
+});
+
 test('preview-metadata CLI emits the artifact contract fields to $GITHUB_OUTPUT for the composite action', () => {
   const sourceDir = makeStorybookSource();
   const outputDir = makeTempDir('preview-build-bundle-');
-  const tempDir = makeTempDir('preview-build-env-');
-  const outputFilePath = path.join(tempDir, 'github_output');
-  fs.writeFileSync(outputFilePath, '');
+  const { outputFilePath, summaryFilePath } = makeGitHubFiles('preview-build-env-');
 
   const scriptPath = path.join(process.cwd(), 'src/preview-metadata.js');
   const env = {
@@ -143,7 +166,8 @@ test('preview-metadata CLI emits the artifact contract fields to $GITHUB_OUTPUT 
     ARTIFACT_NAME: 'storybook-preview-pr-77-run-999',
     PREVIEW_ROOT: 'pr-preview',
     SOURCE_PATH: sourceDir,
-    GITHUB_OUTPUT: outputFilePath
+    GITHUB_OUTPUT: outputFilePath,
+    GITHUB_STEP_SUMMARY: summaryFilePath
   };
 
   const run = spawnSync('node', [scriptPath, outputDir], { env, encoding: 'utf8' });
@@ -174,9 +198,7 @@ test('preview-metadata CLI emits the artifact contract fields to $GITHUB_OUTPUT 
 test('preview-metadata CLI marks fork pull requests with a null target and no publish target in outputs', () => {
   const sourceDir = makeStorybookSource();
   const outputDir = makeTempDir('preview-build-fork-bundle-');
-  const tempDir = makeTempDir('preview-build-fork-env-');
-  const outputFilePath = path.join(tempDir, 'github_output');
-  fs.writeFileSync(outputFilePath, '');
+  const { outputFilePath, summaryFilePath } = makeGitHubFiles('preview-build-fork-env-');
 
   const scriptPath = path.join(process.cwd(), 'src/preview-metadata.js');
   const env = {
@@ -191,7 +213,8 @@ test('preview-metadata CLI marks fork pull requests with a null target and no pu
     ARTIFACT_NAME: 'storybook-preview-pr-78-run-1000',
     PREVIEW_ROOT: 'pr-preview',
     SOURCE_PATH: sourceDir,
-    GITHUB_OUTPUT: outputFilePath
+    GITHUB_OUTPUT: outputFilePath,
+    GITHUB_STEP_SUMMARY: summaryFilePath
   };
 
   const run = spawnSync('node', [scriptPath, outputDir], { env, encoding: 'utf8' });
@@ -220,7 +243,8 @@ test('preview-metadata CLI fails closed on an empty or non-directory source path
     HEAD_SHA: SHA_VALID,
     ARTIFACT_NAME: 'storybook-preview-pr-1-run-1',
     PREVIEW_ROOT: 'pr-preview',
-    SOURCE_PATH: path.join(os.tmpdir(), 'this-path-does-not-exist-12345')
+    SOURCE_PATH: path.join(os.tmpdir(), 'this-path-does-not-exist-12345'),
+    GITHUB_STEP_SUMMARY: ''
   };
 
   const run = spawnSync('node', [scriptPath, outputDir], { env, encoding: 'utf8' });
@@ -246,7 +270,8 @@ test('preview-metadata CLI rejects an invalid PR number even when a source direc
     HEAD_SHA: SHA_VALID,
     ARTIFACT_NAME: 'storybook-preview-pr-1-run-1',
     PREVIEW_ROOT: 'pr-preview',
-    SOURCE_PATH: sourceDir
+    SOURCE_PATH: sourceDir,
+    GITHUB_STEP_SUMMARY: ''
   };
 
   const run = spawnSync('node', [scriptPath, outputDir], { env, encoding: 'utf8' });

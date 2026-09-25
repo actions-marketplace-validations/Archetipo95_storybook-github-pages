@@ -13,6 +13,16 @@ on:
         required: false
         type: string
         default: ''
+      cache:
+        description: 'Whether to restore and save dependency and Storybook compilation caches in the read-only build job'
+        required: false
+        type: boolean
+        default: true
+      cache_key_prefix:
+        description: 'Prefix for Bun and Storybook compilation cache keys'
+        required: false
+        type: string
+        default: 'storybook-gh-pages'
       install_command:
         description: 'Custom command to install dependencies'
         required: false
@@ -33,6 +43,21 @@ on:
         required: false
         type: string
         default: 'github-pages'
+      create_deployment:
+        description: 'Whether to create a native GitHub deployment record and status lifecycle for the Pages deployment'
+        required: false
+        type: boolean
+        default: true
+      environment_name:
+        description: 'GitHub deployment environment name for Pages/native deployment records'
+        required: false
+        type: string
+        default: 'github-pages'
+      environment_url:
+        description: 'Explicit environment URL to expose on the deployment record'
+        required: false
+        type: string
+        default: ''
       mode:
         description: 'Deployment mode: artifact or trusted branch-backed directory'
         required: false
@@ -58,6 +83,11 @@ on:
         required: false
         type: string
         default: ''
+      auto_base_url:
+        description: 'Whether to compute and inject the Storybook base URL for the deployment target'
+        required: false
+        type: boolean
+        default: true
       managed_directories:
         description: 'Comma-separated managed directories preserved at the root'
         required: false
@@ -88,6 +118,21 @@ on:
         required: false
         type: number
         default: 24
+      smoke_test:
+        description: 'Whether to run an opt-in Playwright smoke test before publishing'
+        required: false
+        type: boolean
+        default: false
+      smoke_test_stories:
+        description: 'Comma-separated story id globs to smoke test, or all'
+        required: false
+        type: string
+        default: 'all'
+      smoke_test_timeout_ms:
+        description: 'Per-page Playwright navigation timeout in milliseconds'
+        required: false
+        type: number
+        default: 30000
     secrets:
       passcode_hash:
         description: 'SHA-256 hash of the Storybook passcode'
@@ -113,16 +158,20 @@ permissions:
 jobs:
   build-and-upload:
     name: Build & Validate Storybook
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     outputs:
       mode: ${{ steps.config.outputs.mode }}
       environment: ${{ steps.config.outputs.environment }}
+      environment_name: ${{ steps.config.outputs.environment_name }}
+      environment_url: ${{ steps.config.outputs.environment_url }}
+      create_deployment: ${{ steps.config.outputs.create_deployment }}
       pages_branch: ${{ steps.config.outputs.pages_branch }}
       target_directory: ${{ steps.config.outputs.target_directory }}
       site_url: ${{ steps.config.outputs.site_url }}
       base_path: ${{ steps.config.outputs.base_path }}
+      auto_base_url: ${{ steps.config.outputs.auto_base_url }}
       managed_directories: ${{ steps.config.outputs.managed_directories }}
       artifact_name: ${{ steps.config.outputs.artifact_name }}
       generate_badges: ${{ steps.config.outputs.generate_badges }}
@@ -150,6 +199,10 @@ jobs:
             console.log(`test_results_path=${c.test_results_path || ""}`);
             console.log(`install_command=${c.build.install_command ?? ""}`);
             console.log(`build_command=${c.build.build_command ?? ""}`);
+            console.log(`auto_base_url=${c.auto_base_url}`);
+            console.log(`create_deployment=${String(Boolean(c.create_deployment))}`);
+            console.log(`environment_name=${c.environment_name || ""}`);
+            console.log(`environment_url=${c.environment_url || ""}`);
           })' >> "$GITHUB_OUTPUT"
 
       - name: Set up Node.js
@@ -157,10 +210,32 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '20'
+          cache: ${{ inputs.cache && steps.config.outputs.package_manager || '' }}
 
       - name: Set up Bun
         if: ${{ steps.config.outputs.package_manager == 'bun' }}
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Restore Bun dependency cache
+        if: ${{ inputs.cache && steps.config.outputs.package_manager == 'bun' }}
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ inputs.cache_key_prefix }}-bun-${{ hashFiles('**/bun.lock', '**/bun.lockb') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ inputs.cache_key_prefix }}-bun-
+
+      - name: Restore Storybook compilation cache
+        if: ${{ inputs.cache }}
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            node_modules/.cache/storybook
+            .cache/storybook
+            .storybook/.cache
+          key: ${{ runner.os }}-${{ inputs.cache_key_prefix }}-storybook-${{ hashFiles('**/*.[jt]s', '**/*.[jt]sx', '**/*.vue', '**/*.svelte', '**/*.mdx', '.storybook/**') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ inputs.cache_key_prefix }}-storybook-
 
       - name: Run custom install command
         if: ${{ steps.config.outputs.install_command != '' }}
@@ -172,7 +247,18 @@ jobs:
         if: ${{ steps.config.outputs.build_command != '' }}
         env:
           BUILD_COMMAND: ${{ steps.config.outputs.build_command }}
-        run: eval "$BUILD_COMMAND"
+          AUTO_BASE_URL: ${{ steps.config.outputs.auto_base_url }}
+          REPOSITORY: ${{ github.repository }}
+          SITE_URL: ${{ steps.config.outputs.site_url }}
+          BASE_PATH: ${{ steps.config.outputs.base_path }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          CMD="$BUILD_COMMAND"
+          if [ "$AUTO_BASE_URL" = "true" ]; then
+            eval "$(node -e 'import("./src/base-url.js").then(({computeBaseUrl, augmentBuildCommand, buildEnvironment}) => { const baseUrl = computeBaseUrl({repository: process.env.REPOSITORY, siteUrl: process.env.SITE_URL, basePath: process.env.BASE_PATH, eventName: process.env.EVENT_NAME, prNumber: process.env.PR_NUMBER}); const command = augmentBuildCommand(process.env.BUILD_COMMAND, baseUrl); console.log(`CMD=${JSON.stringify(command)}`); for (const [key, value] of Object.entries(buildEnvironment(baseUrl))) console.log(`export ${key}=${JSON.stringify(value)}`); })')"
+          fi
+          eval "$CMD"
 
       - name: Generate Storybook badges
         if: ${{ steps.config.outputs.generate_badges == 'true' }}
@@ -197,6 +283,10 @@ jobs:
           TEST_RESULTS_PATH: ${{ steps.config.outputs.test_results_path }}
           SITE_URL: ${{ steps.config.outputs.site_url }}
           BASE_PATH: ${{ steps.config.outputs.base_path }}
+
+      - name: Run Storybook smoke test
+        if: ${{ steps.config.outputs.smoke_test == 'true' }}
+        run: node src/smoke-test.js "${{ steps.config.outputs.path }}" "${{ github.workspace }}" "${{ steps.config.outputs.smoke_test_stories }}" "${{ steps.config.outputs.smoke_test_timeout_ms }}"
 
       - name: Validate static artifact
         run: |
@@ -226,7 +316,7 @@ jobs:
 
       - name: Upload Pages artifact
         if: ${{ steps.config.outputs.mode == 'artifact' }}
-        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: ${{ steps.config.outputs.path }}
           name: ${{ steps.config.outputs.artifact_name }}
@@ -244,32 +334,77 @@ jobs:
     name: Deploy to GitHub Pages
     needs: build-and-upload
     if: ${{ needs.build-and-upload.result == 'success' && needs.build-and-upload.outputs.mode == 'artifact' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment:
-      name: ${{ needs.build-and-upload.outputs.environment }}
-      url: ${{ steps.deploy-pages.outputs.page_url }}
+      name: ${{ needs.build-and-upload.outputs.environment_name || needs.build-and-upload.outputs.environment || 'github-pages' }}
+      url: ${{ needs.build-and-upload.outputs.environment_url || steps.deploy-pages.outputs.page_url }}
     permissions:
       contents: read
       pages: write
       id-token: write
+      deployments: write
 
     outputs:
       page_url: ${{ steps.deploy-pages.outputs.page_url }}
       status: 'success'
-      deployment_id: ${{ steps.deploy-pages.outputs.deployment_id }}
+      deployment_id: ${{ steps.create-deployment.outputs.deployment_id || steps.deploy-pages.outputs.deployment_id }}
 
     steps:
+      - name: Checkout repository
+        if: ${{ needs.build-and-upload.outputs.create_deployment == 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Create GitHub deployment (pending)
+        id: create-deployment
+        if: ${{ needs.build-and-upload.outputs.create_deployment == 'true' }}
+        env:
+          ACTION: create
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DEPLOY_REF: ${{ github.sha }}
+          DEPLOYMENT_ENVIRONMENT: ${{ needs.build-and-upload.outputs.environment_name || needs.build-and-upload.outputs.environment || 'github-pages' }}
+          ENVIRONMENT_URL: ${{ needs.build-and-upload.outputs.environment_url }}
+          LOG_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DEPLOYMENT_DESCRIPTION: ${{ needs.build-and-upload.outputs.environment_name || needs.build-and-upload.outputs.environment || 'github-pages' }} deployment
+        run: node src/github-deployments.js
+
       - name: Deploy to GitHub Pages
         id: deploy-pages
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
         with:
           artifact_name: ${{ needs.build-and-upload.outputs.artifact_name }}
+
+      - name: Update GitHub deployment status (success)
+        if: ${{ always() && steps.create-deployment.outputs.deployment_id != '' && steps.deploy-pages.outcome == 'success' }}
+        env:
+          ACTION: update
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DEPLOYMENT_ID: ${{ steps.create-deployment.outputs.deployment_id }}
+          DEPLOYMENT_STATE: success
+          ENVIRONMENT_URL: ${{ needs.build-and-upload.outputs.environment_url || steps.deploy-pages.outputs.page_url }}
+          LOG_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DEPLOYMENT_DESCRIPTION: Deployment succeeded for ${{ needs.build-and-upload.outputs.environment_name || needs.build-and-upload.outputs.environment || 'github-pages' }}
+        run: node src/github-deployments.js
+
+      - name: Update GitHub deployment status (failure)
+        if: ${{ failure() && steps.create-deployment.outputs.deployment_id != '' }}
+        env:
+          ACTION: update
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DEPLOYMENT_ID: ${{ steps.create-deployment.outputs.deployment_id }}
+          DEPLOYMENT_STATE: failure
+          ENVIRONMENT_URL: ${{ needs.build-and-upload.outputs.environment_url || steps.deploy-pages.outputs.page_url }}
+          LOG_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DEPLOYMENT_DESCRIPTION: Deployment failed for ${{ needs.build-and-upload.outputs.environment_name || needs.build-and-upload.outputs.environment || 'github-pages' }}
+        run: node src/github-deployments.js
 
   directory-publish:
     name: Publish Storybook directory
     needs: build-and-upload
     if: ${{ needs.build-and-upload.result == 'success' && needs.build-and-upload.outputs.mode == 'directory' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       pages: write
@@ -300,7 +435,7 @@ jobs:
           BASE_PATH: ${{ needs.build-and-upload.outputs.base_path }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        uses: Archetipo95/storybook-github-pages/publisher@9be19be83cb05f2f648b4c78dac27befdb93d740
+        uses: Archetipo95/storybook-github-pages/publisher@1a922a815952feaeb895f65b7f5dbf673c2fd204
         with:
           pages_repo: ${{ github.workspace }}/pages-repo
           source_directory: ${{ github.workspace }}/storybook-static

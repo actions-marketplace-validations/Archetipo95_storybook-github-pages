@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 const root = process.cwd();
 const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf8');
@@ -36,8 +37,13 @@ test('pr-preview-publish workflow gates on success/event/repository and requires
   assert.match(content, /pages_branch:/, 'publish must support pages_branch input');
   assert.match(content, /site_url:/, 'publish must support site_url input');
   assert.match(content, /base_path:/, 'publish must support base_path input');
+  assert.match(content, /generate_stats_graph:/, 'publish must support generate_stats_graph input');
+  assert.match(content, /stats_directory:/, 'publish must support stats_directory input');
   assert.match(content, /managed_directories:/, 'publish must support managed_directories input');
   assert.match(content, /artifact_name:/, 'publish must support artifact_name input');
+  assert.match(content, /enable_passcode_gate:/, 'publish must support passcode gate input');
+  assert.match(content, /passcode_session_hours:/, 'publish must support passcode session duration');
+  assert.match(content, /passcode_hash:/, 'publish must declare the trusted passcode secret');
   const gateJob = extractJobBlock(content, 'gate');
   assert.match(gateJob, /github\.event\.workflow_run\.conclusion == 'success'/);
   assert.match(gateJob, /github\.event\.workflow_run\.event == 'pull_request'/);
@@ -69,6 +75,12 @@ test('pr-preview-publish workflow gates on success/event/repository and requires
   assert.match(publishJob, /actions:\s*read/);
   assert.match(publishJob, /run-id: \$\{\{ needs\.gate\.outputs\.run_id \}\}/);
   assert.match(publishJob, /github-token: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
+  assert.match(publishJob, /passcode_hash: \$\{\{ secrets\.passcode_hash \}\}/);
+  assert.doesNotMatch(
+    read('.github/workflows/pr-preview-build.yml'),
+    /passcode_hash|enable_passcode_gate|PASSCODE_HASH/,
+    'the untrusted build workflow must never receive passcode gate configuration or secrets'
+  );
   assert.match(
     publishJob,
     /git ls-remote --exit-code --heads origin/,
@@ -79,6 +91,33 @@ test('pr-preview-publish workflow gates on success/event/repository and requires
     /steps\.branch_check\.outputs\.exists == 'true'/,
     'checkout and publish steps must be guarded by Pages branch existence'
   );
+  assert.match(
+    publishJob,
+    /generate_stats_graph: \$\{\{ steps\.config\.outputs\.generate_stats_graph \}\}/,
+    'trusted publisher must receive the resolved stats regeneration setting'
+  );
+  assert.match(
+    publishJob,
+    /stats_directory: \$\{\{ steps\.config\.outputs\.stats_directory \}\}/,
+    'trusted publisher must receive the resolved stats directory'
+  );
+});
+
+test('pr-preview-publish pins a preview-publisher action schema that supports the passcode gate', () => {
+  const content = read('.github/workflows/pr-preview-publish.yml');
+  const match = content.match(/Archetipo95\/storybook-github-pages\/preview-publisher@([a-f0-9]{40})/);
+  assert.ok(match, 'publish must pin preview-publisher to a full commit SHA');
+
+  const action = execFileSync('git', ['show', `${match[1]}:preview-publisher/action.yml`], {
+    cwd: root,
+    encoding: 'utf8'
+  });
+
+  assert.match(action, /enable_passcode_gate:/, 'pinned preview-publisher must accept enable_passcode_gate');
+  assert.match(action, /passcode_hash:/, 'pinned preview-publisher must accept passcode_hash');
+  assert.match(action, /passcode_session_hours:/, 'pinned preview-publisher must accept passcode_session_hours');
+  assert.match(action, /generate_stats_graph:/, 'pinned preview-publisher must accept generate_stats_graph');
+  assert.match(action, /stats_directory:/, 'pinned preview-publisher must accept stats_directory');
 });
 
 test('pr-preview-cleanup workflow never checks out the pull request head and stays metadata-only', () => {
@@ -89,6 +128,11 @@ test('pr-preview-cleanup workflow never checks out the pull request head and sta
   assert.match(content, /preview_root:/, 'cleanup must support preview_root input');
   assert.match(content, /pages_branch:/, 'cleanup must support pages_branch input');
   assert.match(content, /pr_number:/, 'cleanup must support pr_number input');
+  assert.match(
+    content,
+    /inputs\.pr_number > 0 && inputs\.pr_number \|\| github\.event\.pull_request\.number/,
+    'cleanup must treat the default workflow_call pr_number=0 as missing and fall back to event metadata'
+  );
   assert.doesNotMatch(
     content,
     /ref: \$\{\{ github\.event\.pull_request\.head/,
@@ -102,6 +146,7 @@ test('pr-preview-cleanup workflow never checks out the pull request head and sta
   const cleanupJob = extractJobBlock(content, 'cleanup');
   assert.match(cleanupJob, /contents:\s*write/);
   assert.match(cleanupJob, /pages:\s*write/);
+  assert.match(cleanupJob, /deployments:\s*write/);
   assert.match(
     cleanupJob,
     /git ls-remote --exit-code --heads origin/,
@@ -123,10 +168,12 @@ test('pr-preview-janitor workflow supports manual dispatch and schedule, never c
   assert.match(content, /preview_root:/, 'janitor must support preview_root input');
   assert.match(content, /pages_branch:/, 'janitor must support pages_branch input');
   assert.match(content, /retention_days:/, 'janitor must support retention_days input');
+  assert.match(content, /warning_days_before_cleanup:/, 'janitor must support warning_days_before_cleanup input');
   assert.doesNotMatch(content, /pull_request/);
   const janitorJob = extractJobBlock(content, 'janitor');
   assert.match(janitorJob, /contents:\s*write/);
   assert.match(janitorJob, /pages:\s*write/);
+  assert.match(janitorJob, /deployments:\s*write/);
   assert.match(janitorJob, /pull-requests:\s*read/);
   assert.match(
     janitorJob,

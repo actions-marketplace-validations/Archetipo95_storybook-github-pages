@@ -3,6 +3,8 @@ import path from 'node:path';
 import { resolvePreviewTarget } from './preview-metadata.js';
 import { resolveConfiguration } from './config.js';
 import { withSerializedBranchWrite, requestPagesRebuild } from './git-branch-writer.js';
+import { updatePreviewCommentStatus } from './preview-comment.js';
+import { deactivateDeploymentsForPullRequest } from './github-deployments.js';
 
 async function pathExists(target) {
   try {
@@ -39,6 +41,38 @@ export async function removePreviewDirectory({ repo, branch = 'gh-pages', previe
   return { target, ...result };
 }
 
+export async function requestCleanupPagesRebuild({
+  token,
+  repository,
+  commitSha,
+  requestRebuild = requestPagesRebuild
+}) {
+  try {
+    await requestRebuild({ token, repository, commitSha });
+    return { ok: true };
+  } catch (error) {
+    const message = `Preview cleanup removed the directory, but the optional Pages rebuild failed: ${error.message}`;
+    console.warn(message);
+    return { ok: false, message };
+  }
+}
+
+export async function requestCleanupCommentUpdate({
+  token,
+  repository,
+  prNumber,
+  updateStatus = updatePreviewCommentStatus
+}) {
+  try {
+    await updateStatus({ token, repository, prNumber, expired: true });
+    return { ok: true };
+  } catch (error) {
+    const message = `Preview cleanup removed the directory, but the optional preview comment update failed: ${error.message}`;
+    console.warn(message);
+    return { ok: false, message };
+  }
+}
+
 if (process.argv[1] && process.argv[1].endsWith('preview-cleanup.js')) {
   const config = resolveConfiguration({
     inputs: {
@@ -55,8 +89,36 @@ if (process.argv[1] && process.argv[1].endsWith('preview-cleanup.js')) {
   })
     .then(async result => {
       console.log(JSON.stringify(result));
-      if (result.changed && process.env.GITHUB_TOKEN && process.env.GITHUB_REPOSITORY) {
-        await requestPagesRebuild({ token: process.env.GITHUB_TOKEN, repository: process.env.GITHUB_REPOSITORY });
+      const prNumber = Number(process.env.PR_NUMBER || 0);
+      if (
+        result.changed &&
+        process.env.GITHUB_TOKEN &&
+        process.env.GITHUB_REPOSITORY &&
+        Number.isFinite(prNumber) &&
+        prNumber > 0
+      ) {
+        const deploymentEnvironment =
+          process.env.DEPLOYMENT_ENVIRONMENT ||
+          process.env.ENVIRONMENT_NAME ||
+          process.env.ENVIRONMENT ||
+          `pr-preview-${prNumber}`;
+        await deactivateDeploymentsForPullRequest({
+          token: process.env.GITHUB_TOKEN,
+          repository: process.env.GITHUB_REPOSITORY,
+          environmentName: deploymentEnvironment,
+          prNumber,
+          description: `Preview cleanup for PR #${prNumber}`
+        });
+        await requestCleanupPagesRebuild({
+          token: process.env.GITHUB_TOKEN,
+          repository: process.env.GITHUB_REPOSITORY,
+          commitSha: result.commitSha
+        });
+        await requestCleanupCommentUpdate({
+          token: process.env.GITHUB_TOKEN,
+          repository: process.env.GITHUB_REPOSITORY,
+          prNumber: process.env.PR_NUMBER
+        });
       }
       if (process.env.GITHUB_STEP_SUMMARY) {
         const message = result.changed

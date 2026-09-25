@@ -2,8 +2,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { validateRelativeDirectory, resolveConfiguration } from './config.js';
 import { run, withSerializedBranchWrite, requestPagesRebuild } from './git-branch-writer.js';
+import { updatePreviewCommentStatus } from './preview-comment.js';
+import { deactivateDeploymentsForPullRequest } from './github-deployments.js';
 
 const PREVIEW_DIR_PATTERN = /^pr-(\d+)$/;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Parses a preview root entry name and returns its PR number, or null when
@@ -24,9 +27,17 @@ export function parsePreviewDirName(name) {
  * (e.g. a long-lived draft PR); everything else, including directories that
  * do not look like `pr-<number>`, is left alone.
  */
-export function classifyPreviewEntries({ entries, openPrNumbers, retentionMs, now = Date.now(), getLastModifiedMs }) {
+export function classifyPreviewEntries({
+  entries,
+  openPrNumbers,
+  retentionMs,
+  warningMs = null,
+  now = Date.now(),
+  getLastModifiedMs
+}) {
   const keep = [];
   const remove = [];
+  const warn = [];
   const ignored = [];
 
   for (const entry of entries) {
@@ -49,10 +60,23 @@ export function classifyPreviewEntries({ entries, openPrNumbers, retentionMs, no
       remove.push({ entry, prNumber, reason: 'stale-retention' });
       continue;
     }
+    if (
+      Number.isFinite(warningMs) &&
+      warningMs >= 0 &&
+      typeof lastModifiedMs === 'number' &&
+      now - lastModifiedMs >= warningMs
+    ) {
+      warn.push({
+        entry,
+        prNumber,
+        ageMs: now - lastModifiedMs,
+        remainingDays: Math.max(0, Math.ceil((retentionMs - (now - lastModifiedMs)) / DAY_MS))
+      });
+    }
     keep.push(entry);
   }
 
-  return { keep, remove, ignored };
+  return { keep, remove, warn, ignored };
 }
 
 async function listPreviewEntries(repo, previewRoot) {
@@ -112,12 +136,15 @@ export async function runJanitor({
   branch = 'gh-pages',
   previewRoot = 'pr-preview',
   retentionDays = 30,
+  warningDaysBeforeCleanup = 3,
   token,
   repository
 }) {
   const normalizedRoot = previewRoot === '.' || previewRoot === './' ? '' : previewRoot;
   validateRelativeDirectory(normalizedRoot, 'preview_root', { allowEmpty: true });
-  const retentionMs = Number(retentionDays) > 0 ? Number(retentionDays) * 24 * 60 * 60 * 1000 : 0;
+  const retentionMs = Number(retentionDays) > 0 ? Number(retentionDays) * DAY_MS : 0;
+  const warningDays = Number(warningDaysBeforeCleanup);
+  const warningMs = retentionMs > 0 && warningDays > 0 ? Math.max(0, retentionMs - warningDays * DAY_MS) : null;
   const openPrNumbers = await fetchOpenPullRequestNumbers({ token, repository });
   const entries = await listPreviewEntries(repo, normalizedRoot);
 
@@ -129,16 +156,17 @@ export async function runJanitor({
     lastModifiedByEntry.set(entry, await lastModifiedMsForPath(repo, relative));
   }
 
-  const { keep, remove, ignored } = classifyPreviewEntries({
+  const { keep, remove, warn, ignored } = classifyPreviewEntries({
     entries,
     openPrNumbers,
     retentionMs,
+    warningMs,
     now: Date.now(),
     getLastModifiedMs: entry => lastModifiedByEntry.get(entry) ?? null
   });
 
   if (remove.length === 0) {
-    return { removed: [], keep, ignored, changed: false };
+    return { removed: [], warned: warn, keep, ignored, changed: false };
   }
 
   const result = await withSerializedBranchWrite({
@@ -156,7 +184,7 @@ export async function runJanitor({
     }
   });
 
-  return { removed: remove, keep, ignored, changed: result.changed };
+  return { removed: remove, warned: warn, keep, ignored, changed: result.changed, commitSha: result.commitSha };
 }
 
 if (process.argv[1] && process.argv[1].endsWith('preview-janitor.js')) {
@@ -164,7 +192,8 @@ if (process.argv[1] && process.argv[1].endsWith('preview-janitor.js')) {
     inputs: {
       preview_root: process.env.PREVIEW_ROOT,
       pages_branch: process.env.PAGES_BRANCH,
-      preview_retention_days: process.env.PREVIEW_RETENTION_DAYS
+      preview_retention_days: process.env.PREVIEW_RETENTION_DAYS,
+      warning_days_before_cleanup: process.env.WARNING_DAYS_BEFORE_CLEANUP
     }
   });
 
@@ -173,6 +202,7 @@ if (process.argv[1] && process.argv[1].endsWith('preview-janitor.js')) {
     branch: config.pages_branch || process.env.PAGES_BRANCH || 'gh-pages',
     previewRoot: config.preview_root,
     retentionDays: config.preview_retention_days,
+    warningDaysBeforeCleanup: config.warning_days_before_cleanup,
     token: process.env.GITHUB_TOKEN,
     repository: process.env.GITHUB_REPOSITORY
   })
@@ -189,7 +219,38 @@ if (process.argv[1] && process.argv[1].endsWith('preview-janitor.js')) {
         )
       );
       if (result.changed) {
-        await requestPagesRebuild({ token: process.env.GITHUB_TOKEN, repository: process.env.GITHUB_REPOSITORY });
+        const deploymentEnvironmentOverride =
+          process.env.DEPLOYMENT_ENVIRONMENT || process.env.ENVIRONMENT_NAME || process.env.ENVIRONMENT || '';
+        for (const item of result.removed) {
+          await deactivateDeploymentsForPullRequest({
+            token: process.env.GITHUB_TOKEN,
+            repository: process.env.GITHUB_REPOSITORY,
+            environmentName: deploymentEnvironmentOverride || `pr-preview-${item.prNumber}`,
+            prNumber: item.prNumber,
+            description: `Preview cleanup for PR #${item.prNumber}`
+          });
+        }
+        await requestPagesRebuild({
+          token: process.env.GITHUB_TOKEN,
+          repository: process.env.GITHUB_REPOSITORY,
+          commitSha: result.commitSha
+        });
+      }
+      for (const item of result.warned) {
+        await updatePreviewCommentStatus({
+          token: process.env.GITHUB_TOKEN,
+          repository: process.env.GITHUB_REPOSITORY,
+          prNumber: item.prNumber,
+          warningDays: item.remainingDays
+        });
+      }
+      for (const item of result.removed) {
+        await updatePreviewCommentStatus({
+          token: process.env.GITHUB_TOKEN,
+          repository: process.env.GITHUB_REPOSITORY,
+          prNumber: item.prNumber,
+          expired: true
+        });
       }
       if (process.env.GITHUB_STEP_SUMMARY) {
         const summary =

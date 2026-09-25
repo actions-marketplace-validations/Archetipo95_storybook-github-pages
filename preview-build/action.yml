@@ -63,6 +63,18 @@ inputs:
     description: 'Directory within the static build output to store generated badges'
     required: false
     default: 'badges'
+  test_results_path:
+    description: 'Path to JSON test results used to generate tests.svg/tests.json badges'
+    required: false
+    default: ''
+  coverage_include_paths:
+    description: 'Repository-root-relative glob patterns that narrow the component coverage denominator'
+    required: false
+    default: ''
+  coverage_ignore_paths:
+    description: 'Repository-root-relative glob patterns removed from the final coverage set even when they match include rules'
+    required: false
+    default: ''
   generate_stats_graph:
     description: 'Whether to auto-generate hand-drawn growth chart (history.svg) and update metrics ledger (history.json)'
     required: false
@@ -71,6 +83,18 @@ inputs:
     description: 'Directory within the static build output to store stats graph and ledger'
     required: false
     default: 'stats'
+  smoke_test:
+    description: 'Whether to run an opt-in Playwright smoke test before packaging'
+    required: false
+    default: 'false'
+  smoke_test_stories:
+    description: 'Comma-separated story id globs to smoke test, or all'
+    required: false
+    default: 'all'
+  smoke_test_timeout_ms:
+    description: 'Per-page Playwright navigation timeout in milliseconds'
+    required: false
+    default: '30000'
 
 outputs:
   artifact_name:
@@ -121,6 +145,16 @@ runs:
         echo "artifact_name=storybook-preview-pr-${PR_NUMBER}-run-${RUN_ID}" >> "$GITHUB_OUTPUT"
         echo "bundle_dir=${RUNNER_TEMP}/storybook-preview-bundle" >> "$GITHUB_OUTPUT"
 
+    - name: Run Storybook smoke test
+      if: ${{ inputs.smoke_test == 'true' }}
+      shell: bash
+      env:
+        SOURCE_PATH: ${{ inputs.source_path }}
+        WORKSPACE_ROOT: ${{ github.workspace }}
+        SMOKE_TEST_STORIES: ${{ inputs.smoke_test_stories }}
+        SMOKE_TEST_TIMEOUT_MS: ${{ inputs.smoke_test_timeout_ms }}
+      run: node "${{ github.action_path }}/../src/smoke-test.js" "$SOURCE_PATH" "$WORKSPACE_ROOT" "$SMOKE_TEST_STORIES" "$SMOKE_TEST_TIMEOUT_MS"
+
     - name: Validate static Storybook output
       shell: bash
       env:
@@ -134,6 +168,9 @@ runs:
       env:
         SOURCE_PATH: ${{ inputs.source_path }}
         SB_BADGES_DIRECTORY: ${{ inputs.badges_directory || 'badges' }}
+        SB_TEST_RESULTS_PATH: ${{ inputs.test_results_path || '' }}
+        SB_COVERAGE_INCLUDE_PATHS: ${{ inputs.coverage_include_paths || '' }}
+        SB_COVERAGE_IGNORE_PATHS: ${{ inputs.coverage_ignore_paths || '' }}
         WORKSPACE_ROOT: ${{ github.workspace }}
         GITHUB_SHA: ${{ inputs.head_sha || github.sha }}
       run: node "${{ github.action_path }}/../src/generate-badges.js" "$SOURCE_PATH" "$WORKSPACE_ROOT"

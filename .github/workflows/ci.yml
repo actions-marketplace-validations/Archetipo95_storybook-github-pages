@@ -12,7 +12,7 @@ permissions:
 jobs:
   test-and-validate:
     name: Run Tests & Action Validation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repository
@@ -33,6 +33,9 @@ jobs:
 
       - name: Run unit test suite
         run: npm test
+
+      - name: Report code coverage
+        run: npm run test:coverage
 
       - name: Check code formatting and linting
         run: |

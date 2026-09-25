@@ -11,6 +11,52 @@ import {
   resolveDeploymentTarget,
   resolveBaseDirectoryForRef
 } from '../src/config.js';
+import { augmentBuildCommand, computeBaseUrl, hasExplicitBaseUrl } from '../src/base-url.js';
+
+test('automatic base URL computation handles repository, custom-domain, and PR preview paths', () => {
+  assert.equal(computeBaseUrl({ repository: 'acme/design-system' }), '/design-system/');
+  assert.equal(
+    computeBaseUrl({ repository: 'acme/design-system', eventName: 'pull_request', prNumber: 123 }),
+    '/design-system/pr-123/'
+  );
+  assert.equal(computeBaseUrl({ repository: 'acme/design-system', siteUrl: 'https://storybook.example.com' }), '/');
+  assert.equal(computeBaseUrl({ repository: 'acme/design-system', basePath: 'docs' }), '/docs/');
+  assert.equal(
+    computeBaseUrl({
+      repository: 'acme/design-system',
+      siteUrl: 'https://storybook.example.com',
+      eventName: 'pull_request',
+      prNumber: 123
+    }),
+    '/pr-123/'
+  );
+});
+
+test('automatic base URL augmentation preserves explicit base configuration', () => {
+  assert.equal(hasExplicitBaseUrl('npm run build-storybook -- --base /custom/'), true);
+  assert.equal(hasExplicitBaseUrl('storybook build -o dist'), true);
+  assert.equal(hasExplicitBaseUrl('storybook build --output-dir=dist'), true);
+  assert.equal(
+    augmentBuildCommand('npm run build-storybook -- --base /custom/', '/repo/'),
+    'npm run build-storybook -- --base /custom/'
+  );
+  assert.equal(
+    augmentBuildCommand('npm run build-storybook', '/repo/'),
+    "npm run build-storybook -- --base-url '/repo/'"
+  );
+  assert.equal(augmentBuildCommand('npm run build', '/repo/'), 'npm run build');
+  assert.equal(augmentBuildCommand('vite build', '/repo/'), 'vite build');
+  assert.equal(
+    augmentBuildCommand('npm run build-storybook', '/repo/', { autoBaseUrl: false }),
+    'npm run build-storybook'
+  );
+});
+
+test('resolveConfiguration - auto_base_url defaults on and honors false overrides', () => {
+  const configFilePath = path.join(os.tmpdir(), 'missing-auto-base-url.yml');
+  assert.equal(resolveConfiguration({ inputs: {}, configFilePath }).auto_base_url, true);
+  assert.equal(resolveConfiguration({ inputs: { auto_base_url: 'false' }, configFilePath }).auto_base_url, false);
+});
 
 test('validateConfig - default valid config', () => {
   const valid = {
@@ -116,6 +162,39 @@ test('validateConfig - accepts 0 or positive preview_retention_days and rejects 
   );
   assert.throws(() => validateConfig({ preview_retention_days: -1 }), /preview_retention_days/);
   assert.throws(() => validateConfig({ preview_retention_days: 'many' }), /preview_retention_days/);
+});
+
+test('validateConfig - validates smoke test settings', () => {
+  assert.equal(
+    validateConfig({ smoke_test: true, smoke_test_stories: 'button--*', smoke_test_timeout_ms: 5000 }),
+    true
+  );
+  assert.throws(() => validateConfig({ smoke_test: 'yes' }), /Config smoke_test must be a boolean/);
+  assert.throws(
+    () => validateConfig({ smoke_test_stories: '' }),
+    /Config smoke_test_stories must be a non-empty string/
+  );
+  assert.throws(
+    () => validateConfig({ smoke_test_timeout_ms: 0 }),
+    /Config smoke_test_timeout_ms must be a positive integer/
+  );
+});
+
+test('resolveConfiguration - applies smoke test defaults and overrides', () => {
+  const resolved = resolveConfiguration({
+    inputs: { smoke_test: 'true', smoke_test_stories: 'button--*', smoke_test_timeout_ms: '5000' },
+    configFilePath: path.join(os.tmpdir(), 'missing-smoke-test.yml')
+  });
+  assert.equal(resolved.smoke_test, true);
+  assert.equal(resolved.smoke_test_stories, 'button--*');
+  assert.equal(resolved.smoke_test_timeout_ms, 5000);
+});
+
+test('validateConfig - accepts warning_days_before_cleanup and rejects invalid values', () => {
+  assert.equal(validateConfig({ warning_days_before_cleanup: 3 }), true);
+  assert.equal(validateConfig({ warning_days_before_cleanup: 0 }), true);
+  assert.throws(() => validateConfig({ warning_days_before_cleanup: -1 }), /warning_days_before_cleanup/);
+  assert.throws(() => validateConfig({ warning_days_before_cleanup: 'many' }), /warning_days_before_cleanup/);
 });
 
 test('resolveDeploymentTarget - derives URL metadata for named environments', () => {
@@ -239,6 +318,7 @@ test('resolveConfiguration - defaults preview_root and preview_retention_days, a
   });
   assert.equal(defaults.preview_root, 'pr-preview');
   assert.equal(defaults.preview_retention_days, 30);
+  assert.equal(defaults.warning_days_before_cleanup, 3);
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-config-preview-'));
   const configPath = path.join(tmpDir, '.storybook-pages.yml');

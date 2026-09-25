@@ -3,11 +3,23 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 
+function releaseVersion() {
+  return JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')).version;
+}
+
+function releaseTagPattern(suffix = '') {
+  return new RegExp(`v${releaseVersion().replaceAll('.', '\\.')}${suffix}`);
+}
+
+function readDocs(...files) {
+  return files.map(file => fs.readFileSync(path.join(process.cwd(), file), 'utf8')).join('\n');
+}
+
 test('release validation - package.json runtime dependency cleanliness', () => {
   const pkgPath = path.join(process.cwd(), 'package.json');
   const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
 
-  assert.equal(pkg.version, '1.6.0', 'package.json version must be set to 1.6.0 for stable release');
+  assert.match(pkg.version, /^\d+\.\d+\.\d+$/, 'package.json version must be a stable semver release');
   assert.ok(
     !pkg.dependencies || Object.keys(pkg.dependencies).length === 0,
     'storybook-github-pages must have zero runtime npm dependencies for maximum reproducibility'
@@ -70,7 +82,15 @@ test('release validation - documentation and governance files presence', () => {
     '.github/dependabot.yml',
     '.github/ISSUE_TEMPLATE/bug_report.yml',
     '.github/ISSUE_TEMPLATE/feature_request.yml',
-    '.github/ISSUE_TEMPLATE/config.yml'
+    '.github/ISSUE_TEMPLATE/config.yml',
+    'docs/usage.md',
+    'docs/badges-and-stats.md',
+    'docs/pr-previews.md',
+    'docs/security.md',
+    'docs/migration.md',
+    'docs/bundlers.md',
+    'docs/troubleshooting.md',
+    'docs/development.md'
   ];
 
   for (const file of requiredFiles) {
@@ -81,45 +101,49 @@ test('release validation - documentation and governance files presence', () => {
   }
 });
 
-test('release validation - immutable release tag recommended in README and issue templates', () => {
+test('release validation - immutable release tag recommended in docs and issue templates', () => {
   const root = process.cwd();
-  const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+  const docs = readDocs('README.md', 'docs/usage.md', 'docs/migration.md');
   const bugReport = fs.readFileSync(path.join(root, '.github/ISSUE_TEMPLATE/bug_report.yml'), 'utf8');
 
   assert.match(
-    readme,
-    /uses:\s*Archetipo95\/storybook-github-pages\/\.github\/workflows\/deploy-storybook\.yml@v1\.0\.0/,
-    'README reusable workflow example must use immutable release tag @v1.0.0'
+    docs,
+    new RegExp(
+      `uses:\\s*Archetipo95/storybook-github-pages/\\.github/workflows/deploy-storybook\\.yml@${releaseTagPattern().source}`
+    ),
+    `Docs reusable workflow example must use immutable release tag @v${releaseVersion()}`
   );
   assert.match(
-    readme,
-    /uses:\s*Archetipo95\/storybook-github-pages@v1\.0\.0/,
-    'README composite action example must use immutable release tag @v1.0.0'
+    docs,
+    new RegExp(`uses:\\s*Archetipo95/storybook-github-pages@${releaseTagPattern().source}`),
+    `Docs composite action example must use immutable release tag @v${releaseVersion()}`
   );
   assert.match(
-    readme,
-    /replace `bitovi\/github-actions-storybook-to-github-pages@v1\.0\.3` with `Archetipo95\/storybook-github-pages@v1\.0\.0`/,
-    'README migration guide must specify immutable release tag @v1.0.0'
+    docs,
+    new RegExp(
+      `replace \`bitovi/github-actions-storybook-to-github-pages@v1\\.0\\.3\` with \`Archetipo95/storybook-github-pages@${releaseTagPattern().source}\``
+    ),
+    `Docs migration guide must specify immutable release tag @v${releaseVersion()}`
   );
   assert.match(
-    readme,
-    /Immutable release tags \(for example, `@v1\.0\.1`\)/,
-    'README support matrix must recommend current immutable release tags'
+    docs,
+    new RegExp(`Immutable release tags \\(for example, \`@${releaseTagPattern().source}\`\\)`),
+    'Docs support matrix must recommend current immutable release tags'
   );
   assert.match(
     bugReport,
-    /uses:\s*Archetipo95\/storybook-github-pages@v1\.0\.0/,
-    'Bug report template must use immutable release tag @v1.0.0'
+    new RegExp(`uses:\\s*Archetipo95/storybook-github-pages@${releaseTagPattern().source}`),
+    `Bug report template must use immutable release tag @v${releaseVersion()}`
   );
 });
 
 test('release validation - package manager validation documents Bun workflow-only support', () => {
   const root = process.cwd();
-  const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+  const docs = readDocs('docs/usage.md');
   const actionYml = fs.readFileSync(path.join(root, 'action.yml'), 'utf8');
   const deployYml = fs.readFileSync(path.join(root, '.github/workflows/deploy-storybook.yml'), 'utf8');
 
-  assert.match(readme, /\bpackage_manager\b.*bun/, 'README must document bun as a package manager');
+  assert.match(docs, /\bpackage_manager\b.*bun/, 'Docs must document bun as a package manager');
   assert.match(
     actionYml,
     /package_manager:\s*\n\s*description:.*Bun requires the reusable workflow/,
@@ -133,19 +157,18 @@ test('release validation - package manager validation documents Bun workflow-onl
 });
 
 test('release validation - directory mode integration documents dedicated publisher action', () => {
-  const root = process.cwd();
-  const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+  const docs = readDocs('docs/usage.md', 'docs/security.md');
 
   // Directory mode requires publisher action
   assert.match(
-    readme,
-    /uses:\s*Archetipo95\/storybook-github-pages\/publisher@v1\.0\.1/,
-    'README Option 3 directory mode pipeline must use publisher@v1.0.1'
+    docs,
+    new RegExp(`uses:\\s*Archetipo95/storybook-github-pages/publisher@${releaseTagPattern().source}`),
+    `Docs Option 3 directory mode pipeline must use publisher@v${releaseVersion()}`
   );
   assert.match(
-    readme,
+    docs,
     /Platform Note on Reusable Workflows vs Directory Mode/,
-    'README must explain GitHub Actions startup_failure behavior on reusable workflow caller permissions'
+    'Docs must explain GitHub Actions startup_failure behavior on reusable workflow caller permissions'
   );
 });
 

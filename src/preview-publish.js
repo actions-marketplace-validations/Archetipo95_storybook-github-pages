@@ -11,6 +11,9 @@ import {
 import { validateArtifactDirectory } from './validate-artifact.js';
 import { publishDirectory } from './publish-directory.js';
 import { buildCommentBody, upsertPreviewComment } from './preview-comment.js';
+import { createDeployment, updateDeploymentStatus } from './github-deployments.js';
+import { injectAuthGate } from './inject-auth-gate.js';
+import { generateStatsGraph } from './generate-stats.js';
 
 /**
  * Reads and parses the metadata file bundled inside the downloaded build
@@ -39,6 +42,27 @@ export function readBundleMetadata(bundleDir) {
  * rejection path (fork, stale run, provenance mismatch) is returned/thrown
  * before any write-capable operation runs.
  */
+/**
+ * Reads the exact "current PR" snapshot the untrusted build already wrote
+ * into the artifact's own `<statsDirectory>/history.json` (a single entry,
+ * computed by `generate-stats.js` against the real PR source tree - which
+ * the trusted publisher must never check out or execute). Returns null when
+ * absent/malformed so the caller can skip regeneration entirely rather than
+ * recompute against the built static output, which lacks source files and
+ * would silently misreport `totalComponents`/`coveragePercent`.
+ */
+export function readArtifactCurrentSnapshot(contentDir, statsDirectory = 'stats') {
+  const historyPath = path.join(contentDir, statsDirectory, 'history.json');
+  if (!fs.existsSync(historyPath)) return null;
+  try {
+    const raw = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
+    if (Array.isArray(raw) && raw.length > 0) return raw[raw.length - 1];
+  } catch {
+    // Malformed artifact stats file - treat as absent.
+  }
+  return null;
+}
+
 export function resolveBaseMetricsPath({
   pagesRepo,
   baseRef,
@@ -71,6 +95,11 @@ export async function publishPreview({
   siteUrl = '',
   basePath = '',
   triggerPagesRebuild = false,
+  generateStatsGraph: generateStatsGraphEnabled = true,
+  statsDirectory = 'stats',
+  enablePasscodeGate = false,
+  passcodeHash = '',
+  passcodeSessionHours = 24,
   token,
   repository
 }) {
@@ -81,45 +110,155 @@ export async function publishPreview({
     return { ...decision, metadata };
   }
 
+  const shouldCreateDeployment = process.env.CREATE_DEPLOYMENT === 'true';
+  const deploymentEnvironment =
+    process.env.DEPLOYMENT_ENVIRONMENT ||
+    process.env.ENVIRONMENT_NAME ||
+    process.env.ENVIRONMENT ||
+    `pr-preview-${metadata.prNumber}`;
+  const deploymentDescription = `Storybook preview for PR #${metadata.prNumber}`;
+  const deploymentLogUrl = trustedContext?.runId
+    ? `https://github.com/${repository}/actions/runs/${trustedContext.runId}`
+    : '';
+  const explicitEnvironmentUrl = process.env.ENVIRONMENT_URL || '';
+
+  let deploymentRecord = null;
+  if (shouldCreateDeployment) {
+    if (!token || !repository) {
+      throw new Error(
+        'create_deployment is enabled but no GitHub token/repository context was provided; cannot create the GitHub deployment record'
+      );
+    }
+    deploymentRecord = await createDeployment({
+      token,
+      repository,
+      ref: metadata.headSha,
+      environmentName: deploymentEnvironment,
+      environmentUrl: explicitEnvironmentUrl,
+      logUrl: deploymentLogUrl,
+      description: deploymentDescription,
+      payload: {
+        pr_number: metadata.prNumber,
+        prNumber: metadata.prNumber,
+        preview_root: metadata.previewRoot,
+        target: metadata.target,
+        repository: metadata.repository,
+        base_ref: metadata.baseRef,
+        head_sha: metadata.headSha,
+        run_id: metadata.runId,
+        action: 'publish'
+      },
+      productionEnvironment: false,
+      transientEnvironment: true
+    });
+    if (!deploymentRecord || !deploymentRecord.id) {
+      throw new Error('Failed to create the GitHub deployment record before publishing the preview');
+    }
+  }
+
   const contentDir = path.join(bundleDir, PREVIEW_CONTENT_DIRNAME);
   validateArtifactDirectory(PREVIEW_CONTENT_DIRNAME, bundleDir);
   const contentDigest = digestDirectory(contentDir);
   if (contentDigest !== metadata.contentDigest) {
+    if (deploymentRecord && deploymentRecord.id && token && repository) {
+      await updateDeploymentStatus({
+        token,
+        repository,
+        deploymentId: deploymentRecord.id,
+        state: 'failure',
+        environmentUrl: '',
+        logUrl: deploymentLogUrl,
+        description: `${deploymentDescription} failed: content digest mismatch`
+      });
+    }
     throw new Error(`Preview content digest mismatch: expected ${metadata.contentDigest}, got ${contentDigest}`);
   }
 
-  const publishResult = await publishDirectory({
-    repo: pagesRepo,
-    source: contentDir,
-    branch: pagesBranch,
-    targetDirectory: metadata.target,
-    managedDirectories,
-    siteUrl,
-    basePath,
-    triggerPagesRebuild,
-    token,
-    repository
-  });
-
   const baseRef = trustedContext?.baseRef ?? metadata.baseRef;
   const baseDirectory = resolveBaseDirectoryForRef(baseRef, { default_branch: 'main' });
+  const basePagesRepo = baseDirectory ? path.join(pagesRepo, baseDirectory) : pagesRepo;
   const baseMetricsPath = pagesRepo ? resolveBaseMetricsPath({ pagesRepo, baseRef, defaultBranch: 'main' }) : null;
+
+  let publishResult;
+  try {
+    if (enablePasscodeGate) {
+      await injectAuthGate(contentDir, {
+        passcodeHash,
+        sessionHours: Number(passcodeSessionHours)
+      });
+    }
+    if (generateStatsGraphEnabled) {
+      // Use the exact current-PR snapshot the untrusted build already
+      // computed against the real PR source tree; never recompute it here
+      // against `contentDir`, which is only the built static output (no
+      // source files), or against any checked-out branch content.
+      const artifactSnapshot = readArtifactCurrentSnapshot(contentDir, statsDirectory);
+      if (artifactSnapshot) {
+        generateStatsGraph({
+          staticDir: contentDir,
+          pagesRepo: basePagesRepo,
+          statsDirectory,
+          siteUrl,
+          basePath,
+          commitSha: metadata.headSha,
+          currentSnapshot: artifactSnapshot
+        });
+      }
+    }
+    publishResult = await publishDirectory({
+      repo: pagesRepo,
+      source: contentDir,
+      branch: pagesBranch,
+      targetDirectory: metadata.target,
+      managedDirectories,
+      siteUrl,
+      basePath,
+      triggerPagesRebuild,
+      token,
+      repository
+    });
+  } catch (error) {
+    if (deploymentRecord && deploymentRecord.id && token && repository) {
+      await updateDeploymentStatus({
+        token,
+        repository,
+        deploymentId: deploymentRecord.id,
+        state: 'failure',
+        environmentUrl: '',
+        logUrl: deploymentLogUrl,
+        description: `${deploymentDescription} failed: ${error.message}`
+      });
+    }
+    throw error;
+  }
+
+  const previewUrl =
+    publishResult.url ||
+    (() => {
+      const [owner, repoName] = repository.split('/');
+      if (!owner || !repoName) return '';
+      const isUserPage = repoName.toLowerCase() === `${owner.toLowerCase()}.github.io`;
+      const baseSiteUrl = isUserPage ? `https://${owner}.github.io` : `https://${owner}.github.io/${repoName}`;
+      const targetPath = metadata.target ? `/${metadata.target}` : '';
+      return `${baseSiteUrl}${targetPath}`;
+    })();
+
+  if (deploymentRecord && deploymentRecord.id && token && repository) {
+    await updateDeploymentStatus({
+      token,
+      repository,
+      deploymentId: deploymentRecord.id,
+      state: 'success',
+      environmentUrl: explicitEnvironmentUrl || previewUrl,
+      logUrl: deploymentLogUrl,
+      description: `${deploymentDescription} published successfully`
+    });
+  }
 
   let commentResult = null;
   let commentError = null;
   if (token && repository) {
     try {
-      const previewUrl =
-        publishResult.url ||
-        (() => {
-          const [owner, repoName] = repository.split('/');
-          if (!owner || !repoName) return '';
-          const isUserPage = repoName.toLowerCase() === `${owner.toLowerCase()}.github.io`;
-          const baseSiteUrl = isUserPage ? `https://${owner}.github.io` : `https://${owner}.github.io/${repoName}`;
-          const targetPath = metadata.target ? `/${metadata.target}` : '';
-          return `${baseSiteUrl}${targetPath}`;
-        })();
-
       // Extract preview metrics and badges if present
       let metrics = null;
       const overviewPath = path.join(contentDir, 'badges', 'overview.json');
@@ -174,6 +313,7 @@ export async function publishPreview({
     publishResult,
     commentResult,
     commentError,
+    deploymentRecord,
     baseDirectory,
     baseMetricsPath
   };
@@ -205,6 +345,11 @@ if (process.argv[1] && process.argv[1].endsWith('preview-publish.js')) {
     siteUrl: process.env.SITE_URL || '',
     basePath: process.env.BASE_PATH || '',
     triggerPagesRebuild: process.env.TRIGGER_PAGES_REBUILD === 'true',
+    generateStatsGraph: process.env.GENERATE_STATS_GRAPH !== 'false',
+    statsDirectory: process.env.SB_STATS_DIRECTORY || 'stats',
+    enablePasscodeGate: process.env.ENABLE_PASSCODE_GATE === 'true',
+    passcodeHash: process.env.PASSCODE_HASH || '',
+    passcodeSessionHours: process.env.PASSCODE_SESSION_HOURS || 24,
     token: process.env.GITHUB_TOKEN,
     repository: process.env.GITHUB_REPOSITORY
   })

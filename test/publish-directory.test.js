@@ -24,6 +24,22 @@ test('replaceDirectory replaces only the selected target and preserves siblings'
   await fs.rm(source, { recursive: true, force: true });
 });
 
+test('replaceDirectory preserves the shared writer lock during a root publish', async () => {
+  const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'pages-publish-root-'));
+  const source = await fs.mkdtemp(path.join(os.tmpdir(), 'pages-source-root-'));
+  await fs.mkdir(path.join(repo, '.storybook-pages-write.lock'));
+  await fs.writeFile(path.join(repo, 'old.html'), 'old');
+  await fs.writeFile(path.join(source, 'index.html'), 'new');
+
+  await replaceDirectory(repo, '', source);
+
+  assert.equal(await fs.readFile(path.join(repo, 'index.html'), 'utf8'), 'new');
+  await fs.access(path.join(repo, '.storybook-pages-write.lock'));
+  await assert.rejects(fs.readFile(path.join(repo, 'old.html')));
+  await fs.rm(repo, { recursive: true, force: true });
+  await fs.rm(source, { recursive: true, force: true });
+});
+
 test('publishDirectory sends an opt-in authenticated Pages rebuild request with proper headers', async () => {
   const { publishDirectory } = await import('../src/publish-directory.js');
   const repoBare = await fs.mkdtemp(path.join(os.tmpdir(), 'pages-bare-'));
@@ -53,10 +69,14 @@ test('publishDirectory sends an opt-in authenticated Pages rebuild request with 
 
   const originalFetch = global.fetch;
   const requests = [];
-  global.fetch = async (url, options) => {
+  global.fetch = async (url, options = {}) => {
     requests.push({ url, options });
-    if (url.includes('/pages/builds')) {
+    if (url.includes('/pages/builds') && options.method === 'POST') {
       return { ok: true, status: 201, json: async () => ({ status: 'queued' }) };
+    }
+    if (url.includes('/pages/builds')) {
+      const commitSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoClone }).toString().trim();
+      return { ok: true, status: 200, json: async () => [{ commit: commitSha, status: 'built' }] };
     }
     throw new Error(`Unexpected url: ${url}`);
   };
@@ -74,7 +94,8 @@ test('publishDirectory sends an opt-in authenticated Pages rebuild request with 
     });
 
     assert.equal(result.directory, 'storybook');
-    assert.equal(requests.length, 1);
+    assert.match(result.commitSha, /^[0-9a-f]{40}$/);
+    assert.equal(requests.length, 2);
     const rebuildReq = requests[0];
     assert.equal(rebuildReq.url, 'https://api.github.com/repos/my-org/my-repo/pages/builds');
     assert.equal(rebuildReq.options.method, 'POST');
@@ -188,7 +209,7 @@ test('publishDirectory surfaces opt-in Pages rebuild failures after push', async
         token: 'ghp_secret_token_123',
         repository: 'my-org/my-repo'
       }),
-      /Pages rebuild request failed \(403\) after successful push/
+      /Pages rebuild request failed \(403\) after pushing [0-9a-f]{40}/
     );
   } finally {
     global.fetch = originalFetch;

@@ -9,9 +9,18 @@ name: PR Preview Publish
 # only proceeds for a successful, same-repository `pull_request` build
 # (`workflow_run.pull_requests` is populated by GitHub only for
 # same-repository pull requests and is empty for forks - this is the
-# primary, GitHub-enforced fork/same-repo boundary), then independently
-# fetches the pull request's *current* head SHA from the API. No PR content
-# is ever checked out by this workflow; only the trusted Pages branch is.
+# primary, GitHub-enforced fork/same-repo boundary). Because the same head
+# branch/SHA can belong to more than one open pull request, `pull_requests[0]`
+# is *not* trusted to identify which PR the build actually ran for - GitHub
+# gives no ordering guarantee there. Instead, the gate lists the run's own
+# uploaded artifacts and reads the exact PR number the untrusted build job
+# stamped into the deterministic `storybook-preview-pr-<PR>-run-<run>`
+# artifact name (derived from the immutable `github.event.pull_request.number`
+# of the pull_request event that triggered it), cross-checking it against
+# `pull_requests[]` to confirm GitHub really did associate that PR with this
+# run (src/resolve-run-context.js). It then independently fetches that
+# pull request's *current* head SHA from the API. No PR content is ever
+# checked out by this workflow; only the trusted Pages branch is.
 #
 # `publish` re-validates the build artifact's bundled metadata against this
 # trusted context (repository, run id, PR number, base ref, head repo,
@@ -49,6 +58,16 @@ on:
         required: false
         type: string
         default: ''
+      generate_stats_graph:
+        description: 'Whether to regenerate preview stats from trusted Pages history before publishing'
+        required: false
+        type: boolean
+        default: true
+      stats_directory:
+        description: 'Directory within the static build output to store stats graph and ledger'
+        required: false
+        type: string
+        default: ''
       managed_directories:
         description: 'Comma-separated managed directories preserved during root publication'
         required: false
@@ -59,6 +78,40 @@ on:
         required: false
         type: string
         default: ''
+      create_deployment:
+        description: 'Whether to create a native GitHub deployment record for the preview'
+        required: false
+        type: boolean
+        default: true
+      trigger_pages_rebuild:
+        description: 'Explicitly request a GitHub Pages rebuild after publishing the preview; normally only needed for branch-based/legacy Pages setups'
+        required: false
+        type: boolean
+        default: false
+      environment_name:
+        description: 'GitHub deployment environment name for the preview deployment (defaults to pr-preview-<PR_NUMBER> when empty)'
+        required: false
+        type: string
+        default: ''
+      environment_url:
+        description: 'Explicit preview URL to attach to the deployment status'
+        required: false
+        type: string
+        default: ''
+      enable_passcode_gate:
+        description: 'Whether to inject a client-side passcode gate into the published Storybook'
+        required: false
+        type: boolean
+        default: false
+      passcode_session_hours:
+        description: 'Hours before the browser session expires'
+        required: false
+        type: number
+        default: 24
+    secrets:
+      passcode_hash:
+        description: 'SHA-256 hash of the passcode used by the trusted publisher'
+        required: false
     outputs:
       page_url:
         description: 'The URL of the published preview'
@@ -79,7 +132,7 @@ jobs:
         github.event.workflow_run.head_repository.full_name == github.repository &&
         github.event.workflow_run.pull_requests[0] != null
       )
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       pull-requests: read
@@ -92,16 +145,37 @@ jobs:
       head_repository: ${{ steps.context.outputs.head_repository }}
       current_head_sha: ${{ steps.current.outputs.head_sha }}
     steps:
+      # Only used to import the trusted, unit-tested pull-request-identity
+      # resolver below (src/resolve-run-context.js). This workflow supports
+      # `workflow_call` from *any* consumer repository, and a plain
+      # `actions/checkout` (no `repository:` override) inside a reusable
+      # workflow checks out the *caller's* repository, not the repo this
+      # file lives in - the consumer never has `src/resolve-run-context.js`.
+      # Explicitly pin the checkout to this action repository at a fixed
+      # commit so the resolver source is always fetched regardless of who
+      # invokes this workflow. Public repo, read-only, never persists
+      # credentials - not PR content.
+      - name: Checkout resolver source (storybook-github-pages, pinned)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Archetipo95/storybook-github-pages
+          ref: fd46919d8d6b49d915431cddee9d8f0c12687a5a
+          path: .storybook-github-pages-resolver
+          persist-credentials: false
+
       - name: Extract trusted pull request context
         id: context
         env:
           WORKFLOW_RUN_EVENT: ${{ toJSON(github.event.workflow_run) }}
           INPUT_RUN_ID: ${{ inputs.workflow_run_id }}
+          INPUT_ARTIFACT_NAME: ${{ inputs.artifact_name }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
         run: |
           node -e '
             async function main() {
+              const { resolveTrustedPullRequestContext } = await import("./.storybook-github-pages-resolver/src/resolve-run-context.js");
+
               let runData = process.env.WORKFLOW_RUN_EVENT ? JSON.parse(process.env.WORKFLOW_RUN_EVENT) : null;
               const inputRunId = process.env.INPUT_RUN_ID ? Number(process.env.INPUT_RUN_ID) : null;
               const targetRunId = inputRunId || (runData && runData.id);
@@ -111,12 +185,15 @@ jobs:
                 process.exit(1);
               }
 
+              const repo = process.env.REPOSITORY;
+              const authHeaders = {
+                authorization: `token ${process.env.GITHUB_TOKEN}`,
+                accept: "application/vnd.github+json"
+              };
+
               if (!runData || (inputRunId && runData.id !== inputRunId)) {
-                const res = await fetch(`https://api.github.com/repos/${process.env.REPOSITORY}/actions/runs/${targetRunId}`, {
-                  headers: {
-                    authorization: `token ${process.env.GITHUB_TOKEN}`,
-                    accept: "application/vnd.github+json"
-                  }
+                const res = await fetch(`https://api.github.com/repos/${repo}/actions/runs/${targetRunId}`, {
+                  headers: authHeaders
                 });
                 if (!res.ok) {
                   console.error(`Failed to fetch workflow run ${targetRunId}: ${res.status}`);
@@ -133,27 +210,37 @@ jobs:
                 console.error(`Workflow run event is "${runData.event}", expected "pull_request"`);
                 process.exit(1);
               }
-              const repo = process.env.REPOSITORY;
               if (runData.repository?.full_name !== repo || runData.head_repository?.full_name !== repo) {
                 console.error(`Workflow run is from a fork or repository mismatch (${runData.head_repository?.full_name} vs ${repo})`);
                 process.exit(1);
               }
-              const prs = runData.pull_requests || [];
-              if (!Array.isArray(prs) || prs.length === 0) {
-                console.error("No same-repository pull request associated with workflow run");
+
+              // Fetch the artifacts GitHub actually recorded for this run.
+              // The build job stamps its artifact name with the exact PR
+              // number it ran for (github.event.pull_request.number), so
+              // this is the trusted source of *which* pull request the
+              // build was for - never `pull_requests[0]`, which is
+              // unordered and can name a different pull request when the
+              // same head SHA/branch is shared by more than one open PR.
+              const artifactsRes = await fetch(
+                `https://api.github.com/repos/${repo}/actions/runs/${targetRunId}/artifacts?per_page=100`,
+                { headers: authHeaders }
+              );
+              if (!artifactsRes.ok) {
+                console.error(`Failed to list artifacts for workflow run ${targetRunId}: ${artifactsRes.status}`);
                 process.exit(1);
               }
-              const pr = prs[0];
-              if (!Number.isInteger(pr.number) || pr.number <= 0) {
-                console.error("Invalid pull request number in workflow run context");
-                process.exit(1);
-              }
-              const baseRef = pr.base?.ref || "";
-              const headSha = runData.head_sha;
-              const headRepository = runData.head_repository?.full_name || repo;
+              const artifactsData = await artifactsRes.json();
+              const artifacts = Array.isArray(artifactsData.artifacts) ? artifactsData.artifacts : [];
+
+              const { prNumber, baseRef, headSha, headRepository } = resolveTrustedPullRequestContext({
+                runData,
+                artifacts,
+                expectedArtifactName: process.env.INPUT_ARTIFACT_NAME || undefined
+              });
 
               console.log(`run_id=${targetRunId}`);
-              console.log(`pr_number=${pr.number}`);
+              console.log(`pr_number=${prNumber}`);
               console.log(`base_ref=${baseRef}`);
               console.log(`head_sha=${headSha}`);
               console.log(`head_repository=${headRepository}`);
@@ -189,12 +276,13 @@ jobs:
     concurrency:
       group: storybook-pages-${{ github.repository }}
       cancel-in-progress: false
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       pages: write
       pull-requests: write
       actions: read
+      deployments: write
     outputs:
       page_url: ${{ steps.publisher.outputs.page_url }}
       action: ${{ steps.publisher.outputs.action }}
@@ -219,6 +307,8 @@ jobs:
           INPUT_PAGES_BRANCH: ${{ inputs.pages_branch }}
           INPUT_SITE_URL: ${{ inputs.site_url }}
           INPUT_BASE_PATH: ${{ inputs.base_path }}
+          INPUT_GENERATE_STATS_GRAPH: ${{ inputs.generate_stats_graph }}
+          INPUT_STATS_DIRECTORY: ${{ inputs.stats_directory }}
           INPUT_MANAGED_DIRECTORIES: ${{ inputs.managed_directories }}
           REPOSITORY: ${{ github.repository }}
         run: |
@@ -231,18 +321,24 @@ jobs:
                   pages_branch: process.env.INPUT_PAGES_BRANCH,
                   site_url: process.env.INPUT_SITE_URL,
                   base_path: process.env.INPUT_BASE_PATH,
+                  generate_stats_graph: process.env.INPUT_GENERATE_STATS_GRAPH,
+                  stats_directory: process.env.INPUT_STATS_DIRECTORY,
                   managed_directories: process.env.INPUT_MANAGED_DIRECTORIES
                 }});
                 console.log(`preview_root=${c.preview_root}`);
                 console.log(`pages_branch=${c.pages_branch}`);
                 console.log(`site_url=${c.site_url}`);
                 console.log(`base_path=${c.base_path}`);
+                console.log(`generate_stats_graph=${c.generate_stats_graph}`);
+                console.log(`stats_directory=${c.stats_directory}`);
                 console.log(`managed_directories=${Array.isArray(c.managed_directories) ? c.managed_directories.join(",") : c.managed_directories || ""}`);
               } else {
                 let file_preview_root = undefined;
                 let file_pages_branch = undefined;
                 let file_site_url = undefined;
                 let file_base_path = undefined;
+                let file_generate_stats_graph = undefined;
+                let file_stats_directory = undefined;
                 let file_managed_directories = undefined;
                 if (existsSync(".storybook-pages.yml")) {
                   const {readFileSync} = await import("node:fs");
@@ -260,6 +356,12 @@ jobs:
                     }
                     if (file_base_path === undefined && trimmed.startsWith("base_path:")) {
                       file_base_path = trimmed.slice("base_path:".length).trim().replace(/^["'\''"]|["'\''"]$/g, "");
+                    }
+                    if (file_generate_stats_graph === undefined && trimmed.startsWith("generate_stats_graph:")) {
+                      file_generate_stats_graph = trimmed.slice("generate_stats_graph:".length).trim().replace(/^["'\''"]|["'\''"]$/g, "");
+                    }
+                    if (file_stats_directory === undefined && trimmed.startsWith("stats_directory:")) {
+                      file_stats_directory = trimmed.slice("stats_directory:".length).trim().replace(/^["'\''"]|["'\''"]$/g, "");
                     }
                     if (file_managed_directories === undefined && trimmed.startsWith("managed_directories:")) {
                       file_managed_directories = trimmed.slice("managed_directories:".length).trim().replace(/^["'\''"]|["'\''"]$/g, "");
@@ -299,6 +401,14 @@ jobs:
                 const base_path = (rawBasePath !== undefined && rawBasePath !== "")
                   ? rawBasePath
                   : (file_base_path !== undefined ? file_base_path : "");
+                const rawGenerateStatsGraph = process.env.INPUT_GENERATE_STATS_GRAPH;
+                const generate_stats_graph = (rawGenerateStatsGraph !== undefined && rawGenerateStatsGraph !== "")
+                  ? rawGenerateStatsGraph
+                  : (file_generate_stats_graph !== undefined ? file_generate_stats_graph : "true");
+                const rawStatsDirectory = process.env.INPUT_STATS_DIRECTORY;
+                const stats_directory = (rawStatsDirectory !== undefined && rawStatsDirectory !== "")
+                  ? rawStatsDirectory
+                  : (file_stats_directory !== undefined ? file_stats_directory : "stats");
                 const rawManagedDirs = process.env.INPUT_MANAGED_DIRECTORIES;
                 const managed_directories = (rawManagedDirs !== undefined && rawManagedDirs !== "")
                   ? rawManagedDirs
@@ -307,6 +417,8 @@ jobs:
                 console.log(`pages_branch=${pages_branch}`);
                 console.log(`site_url=${site_url}`);
                 console.log(`base_path=${base_path}`);
+                console.log(`generate_stats_graph=${generate_stats_graph}`);
+                console.log(`stats_directory=${stats_directory}`);
                 console.log(`managed_directories=${managed_directories}`);
               }
             });
@@ -348,7 +460,7 @@ jobs:
       - name: Validate provenance and publish
         id: publisher
         if: steps.branch_check.outputs.exists == 'true'
-        uses: Archetipo95/storybook-github-pages/preview-publisher@f40de1f006349536dac43e9dab6728f210fd9e3f
+        uses: Archetipo95/storybook-github-pages/preview-publisher@6fc73c8706dd97387b6b8ff3cb81606f958b9754
         with:
           bundle_dir: ${{ runner.temp }}/preview-bundle
           pages_repo: ${{ github.workspace }}/pages-repo
@@ -356,7 +468,16 @@ jobs:
           preview_root: ${{ steps.config.outputs.preview_root }}
           site_url: ${{ steps.config.outputs.site_url }}
           base_path: ${{ steps.config.outputs.base_path }}
+          generate_stats_graph: ${{ steps.config.outputs.generate_stats_graph }}
+          stats_directory: ${{ steps.config.outputs.stats_directory }}
           managed_directories: ${{ steps.config.outputs.managed_directories }}
+          create_deployment: ${{ inputs.create_deployment }}
+          trigger_pages_rebuild: ${{ inputs.trigger_pages_rebuild }}
+          environment_name: ${{ inputs.environment_name || format('pr-preview-{0}', needs.gate.outputs.pr_number) }}
+          environment_url: ${{ inputs.environment_url }}
+          enable_passcode_gate: ${{ inputs.enable_passcode_gate }}
+          passcode_hash: ${{ secrets.passcode_hash }}
+          passcode_session_hours: ${{ inputs.passcode_session_hours }}
           trusted_repository: ${{ github.repository }}
           trusted_run_id: ${{ needs.gate.outputs.run_id }}
           trusted_pr_number: ${{ needs.gate.outputs.pr_number }}

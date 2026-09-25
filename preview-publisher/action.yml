@@ -27,6 +27,14 @@ inputs:
     description: 'Whether to explicitly request a Pages rebuild after pushing (normally unnecessary for branch-based Pages)'
     required: false
     default: 'false'
+  generate_stats_graph:
+    description: 'Whether to regenerate the preview growth chart from trusted Pages history before publishing'
+    required: false
+    default: 'true'
+  stats_directory:
+    description: 'Directory within the static build output to store stats graph and ledger'
+    required: false
+    default: 'stats'
   managed_directories:
     description: 'Comma-separated managed directories preserved during root publication'
     required: false
@@ -63,6 +71,30 @@ inputs:
     description: 'Current live pull request head commit SHA'
     required: false
     default: ''
+  create_deployment:
+    description: 'Whether to create a native GitHub deployment record for the preview'
+    required: false
+    default: 'true'
+  environment_name:
+    description: 'GitHub deployment environment name for the preview (defaults to pr-preview-<PR_NUMBER> when empty)'
+    required: false
+    default: ''
+  environment_url:
+    description: 'Explicit preview URL to attach to the deployment status'
+    required: false
+    default: ''
+  enable_passcode_gate:
+    description: 'Whether to inject a client-side passcode gate into the published Storybook'
+    required: false
+    default: 'false'
+  passcode_hash:
+    description: 'SHA-256 hash of the passcode; keep this value in a trusted workflow secret'
+    required: false
+    default: ''
+  passcode_session_hours:
+    description: 'Hours before the browser session expires'
+    required: false
+    default: '24'
 outputs:
   page_url:
     description: 'The URL of the published GitHub Pages site'
@@ -83,6 +115,8 @@ runs:
         SITE_URL: ${{ inputs.site_url }}
         BASE_PATH: ${{ inputs.base_path }}
         TRIGGER_PAGES_REBUILD: ${{ inputs.trigger_pages_rebuild }}
+        GENERATE_STATS_GRAPH: ${{ inputs.generate_stats_graph }}
+        SB_STATS_DIRECTORY: ${{ inputs.stats_directory }}
         MANAGED_DIRECTORIES: ${{ inputs.managed_directories }}
         TRUSTED_REPOSITORY: ${{ inputs.trusted_repository }}
         TRUSTED_RUN_ID: ${{ inputs.trusted_run_id }}
@@ -92,6 +126,12 @@ runs:
         TRUSTED_BASE_REF: ${{ inputs.trusted_base_ref }}
         EXPECTED_ARTIFACT_NAME: ${{ inputs.expected_artifact_name }}
         CURRENT_HEAD_SHA: ${{ inputs.current_head_sha }}
+        CREATE_DEPLOYMENT: ${{ inputs.create_deployment }}
+        DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment_name }}
+        ENVIRONMENT_URL: ${{ inputs.environment_url }}
+        ENABLE_PASSCODE_GATE: ${{ inputs.enable_passcode_gate }}
+        PASSCODE_HASH: ${{ inputs.passcode_hash }}
+        PASSCODE_SESSION_HOURS: ${{ inputs.passcode_session_hours }}
         GITHUB_TOKEN: ${{ github.token }}
         GITHUB_REPOSITORY: ${{ github.repository }}
       run: node "${{ github.action_path }}/../src/preview-publish.js"

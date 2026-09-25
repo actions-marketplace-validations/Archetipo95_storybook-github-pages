@@ -39,6 +39,18 @@ inputs:
     description: 'Whether to upload and deploy the Pages artifact'
     required: false
     default: ''
+  create_deployment:
+    description: 'Whether to create a native GitHub deployment record and status lifecycle for the deployment'
+    required: false
+    default: 'false'
+  environment_name:
+    description: 'GitHub deployment environment name for the Pages deployment'
+    required: false
+    default: 'github-pages'
+  environment_url:
+    description: 'Explicit URL to expose on the GitHub deployment environment'
+    required: false
+    default: ''
   artifact_name:
     description: 'Name of the GitHub Pages artifact'
     required: false
@@ -79,6 +91,14 @@ inputs:
     description: 'Optional repository-relative path to a JSON Storybook interaction test results file'
     required: false
     default: ''
+  coverage_include_paths:
+    description: 'Repository-root-relative glob patterns that narrow the component coverage denominator; leave blank for repository-wide scan'
+    required: false
+    default: ''
+  coverage_ignore_paths:
+    description: 'Repository-root-relative glob patterns removed from the final coverage set even when they match include rules'
+    required: false
+    default: ''
   generate_stats_graph:
     description: 'Whether to auto-generate hand-drawn growth chart (history.svg) and update metrics ledger (history.json)'
     required: false
@@ -99,14 +119,30 @@ inputs:
     description: 'Hours before the browser session expires'
     required: false
     default: '24'
+  smoke_test:
+    description: 'Whether to run an opt-in Playwright smoke test before publishing'
+    required: false
+    default: 'false'
+  smoke_test_stories:
+    description: 'Comma-separated story id globs to smoke test, or all'
+    required: false
+    default: 'all'
+  smoke_test_timeout_ms:
+    description: 'Per-page Playwright navigation timeout in milliseconds'
+    required: false
+    default: '30000'
+  auto_base_url:
+    description: 'Whether to compute and inject the Storybook base URL for the deployment target'
+    required: false
+    default: 'true'
 
 outputs:
   page_url:
     description: 'The URL of the deployed GitHub Pages site'
     value: ${{ steps.deploy.outputs.page_url }}
   deployment_id:
-    description: 'The GitHub Pages deployment ID'
-    value: ${{ steps.deploy.outputs.deployment_id }}
+    description: 'The GitHub Pages deployment ID or GitHub deployment record ID'
+    value: ${{ steps.create-deployment.outputs.deployment_id || steps.deploy.outputs.deployment_id }}
   status:
     description: 'Status of the deployment operation (success, skipped, failed)'
     value: ${{ steps.set-status.outputs.status }}
@@ -131,11 +167,17 @@ runs:
             `SB_MODE=${c.mode}`, `SB_PATH=${c.path}`, `SB_PACKAGE_MANAGER=${c.package_manager}`,
             `SB_INSTALL_COMMAND=${c.build.install_command || ""}`, `SB_BUILD_COMMAND=${c.build.build_command || ""}`,
             `SB_PUBLISH=${process.env.PUBLISH_INPUT || "true"}`, `SB_ARTIFACT_NAME=${process.env.ARTIFACT_NAME_INPUT || "github-pages"}`,
+            `SB_CREATE_DEPLOYMENT=${String(c.create_deployment ?? false)}`,
+            `SB_ENVIRONMENT_NAME=${c.environment_name || c.environment || ""}`,
+            `SB_ENVIRONMENT_URL=${c.environment_url || ""}`,
             `SB_GENERATE_BADGES=${c.generate_badges}`, `SB_BADGES_DIRECTORY=${c.badges_directory || "badges"}`,
             `SB_TEST_RESULTS_PATH=${c.test_results_path || ""}`,
+            `SB_COVERAGE_INCLUDE_PATHS=${c.coverage_include_paths || ""}`,
+            `SB_COVERAGE_IGNORE_PATHS=${c.coverage_ignore_paths || ""}`,
             `SB_GENERATE_STATS_GRAPH=${c.generate_stats_graph}`, `SB_STATS_DIRECTORY=${c.stats_directory || "stats"}`,
             `SB_ENABLE_PASSCODE_GATE=${c.enable_passcode_gate}`, `SB_PASSCODE_SESSION_HOURS=${c.passcode_session_hours}`,
-            `SB_SITE_URL=${c.site_url || ""}`, `SB_BASE_PATH=${c.base_path || ""}`
+            `SB_SMOKE_TEST=${c.smoke_test}`, `SB_SMOKE_TEST_STORIES=${c.smoke_test_stories}`, `SB_SMOKE_TEST_TIMEOUT_MS=${c.smoke_test_timeout_ms}`,
+            `SB_SITE_URL=${c.site_url || ""}`, `SB_BASE_PATH=${c.base_path || ""}`, `SB_AUTO_BASE_URL=${c.auto_base_url}`
           ];
           const {appendFileSync} = await import("node:fs");
           appendFileSync(process.env.GITHUB_ENV, `${lines.join("\n")}\n`);
@@ -158,8 +200,19 @@ runs:
     - name: Build Storybook
       if: ${{ env.SB_BUILD_COMMAND != '' }}
       shell: bash
+      env:
+        SB_AUTO_BASE_URL: ${{ env.SB_AUTO_BASE_URL }}
+        SB_BUILD_COMMAND: ${{ env.SB_BUILD_COMMAND }}
+        SB_REPOSITORY: ${{ github.repository }}
+        SB_SITE_URL: ${{ env.SB_SITE_URL }}
+        SB_BASE_PATH: ${{ env.SB_BASE_PATH }}
+        SB_EVENT_NAME: ${{ github.event_name }}
+        SB_PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
-        CMD="${{ env.SB_BUILD_COMMAND }}"
+        CMD="$SB_BUILD_COMMAND"
+        if [ "$SB_AUTO_BASE_URL" = "true" ]; then
+          eval "$(node -e 'import("${{ github.action_path }}/src/base-url.js").then(({computeBaseUrl, augmentBuildCommand, buildEnvironment}) => { const baseUrl = computeBaseUrl({repository: process.env.SB_REPOSITORY, siteUrl: process.env.SB_SITE_URL, basePath: process.env.SB_BASE_PATH, eventName: process.env.SB_EVENT_NAME, prNumber: process.env.SB_PR_NUMBER}); const command = augmentBuildCommand(process.env.SB_BUILD_COMMAND, baseUrl); console.log(`CMD=${JSON.stringify(command)}`); for (const [key, value] of Object.entries(buildEnvironment(baseUrl))) console.log(`export ${key}=${JSON.stringify(value)}`); })')"
+        fi
         echo "Running custom build command: $CMD"
         eval "$CMD"
 
@@ -170,6 +223,8 @@ runs:
         SB_PATH: ${{ env.SB_PATH }}
         SB_BADGES_DIRECTORY: ${{ env.SB_BADGES_DIRECTORY }}
         SB_TEST_RESULTS_PATH: ${{ env.SB_TEST_RESULTS_PATH }}
+        SB_COVERAGE_INCLUDE_PATHS: ${{ env.SB_COVERAGE_INCLUDE_PATHS }}
+        SB_COVERAGE_IGNORE_PATHS: ${{ env.SB_COVERAGE_IGNORE_PATHS }}
         SB_SITE_URL: ${{ env.SB_SITE_URL }}
         SB_BASE_PATH: ${{ env.SB_BASE_PATH }}
         WORKSPACE_ROOT: ${{ github.workspace }}
@@ -187,6 +242,16 @@ runs:
         WORKSPACE_ROOT: ${{ github.workspace }}
         GITHUB_SHA: ${{ github.sha }}
       run: node "${{ github.action_path }}/src/generate-stats.js" "$SB_PATH" "$WORKSPACE_ROOT"
+
+    - name: Run Storybook smoke test
+      if: ${{ env.SB_SMOKE_TEST == 'true' }}
+      shell: bash
+      env:
+        SB_PATH: ${{ env.SB_PATH }}
+        WORKSPACE_ROOT: ${{ github.workspace }}
+        SB_SMOKE_TEST_STORIES: ${{ env.SB_SMOKE_TEST_STORIES }}
+        SB_SMOKE_TEST_TIMEOUT_MS: ${{ env.SB_SMOKE_TEST_TIMEOUT_MS }}
+      run: node "${{ github.action_path }}/src/smoke-test.js" "$SB_PATH" "$WORKSPACE_ROOT" "$SB_SMOKE_TEST_STORIES" "$SB_SMOKE_TEST_TIMEOUT_MS"
 
     - name: Validate static artifact
       shell: bash
@@ -215,17 +280,60 @@ runs:
 
     - name: Upload Pages artifact
       if: ${{ env.SB_PUBLISH == 'true' && env.SB_MODE == 'artifact' }}
-      uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
+      uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
       with:
         path: ${{ env.SB_PATH }}
         name: ${{ env.SB_ARTIFACT_NAME }}
 
+    - name: Create GitHub deployment (pending)
+      id: create-deployment
+      if: ${{ env.SB_PUBLISH == 'true' && env.SB_MODE == 'artifact' && env.SB_CREATE_DEPLOYMENT == 'true' }}
+      shell: bash
+      env:
+        ACTION: create
+        GITHUB_TOKEN: ${{ github.token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        DEPLOY_REF: ${{ github.sha }}
+        DEPLOYMENT_ENVIRONMENT: ${{ env.SB_ENVIRONMENT_NAME || 'github-pages' }}
+        ENVIRONMENT_URL: ${{ env.SB_ENVIRONMENT_URL }}
+        LOG_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        DEPLOYMENT_DESCRIPTION: ${{ env.SB_ENVIRONMENT_NAME || 'github-pages' }} deployment
+      run: node "${{ github.action_path }}/src/github-deployments.js"
+
     - name: Deploy to GitHub Pages
       id: deploy
       if: ${{ env.SB_PUBLISH == 'true' && env.SB_MODE == 'artifact' }}
-      uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+      uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
       with:
         artifact_name: ${{ env.SB_ARTIFACT_NAME }}
+
+    - name: Update GitHub deployment status (success)
+      if: ${{ env.SB_PUBLISH == 'true' && env.SB_MODE == 'artifact' && env.SB_CREATE_DEPLOYMENT == 'true' && steps.create-deployment.outputs.deployment_id != '' && steps.deploy.outcome == 'success' }}
+      shell: bash
+      env:
+        ACTION: update
+        GITHUB_TOKEN: ${{ github.token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        DEPLOYMENT_ID: ${{ steps.create-deployment.outputs.deployment_id }}
+        DEPLOYMENT_STATE: success
+        ENVIRONMENT_URL: ${{ steps.deploy.outputs.page_url || env.SB_ENVIRONMENT_URL }}
+        LOG_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        DEPLOYMENT_DESCRIPTION: ${{ env.SB_ENVIRONMENT_NAME || 'github-pages' }} deployment succeeded
+      run: node "${{ github.action_path }}/src/github-deployments.js"
+
+    - name: Update GitHub deployment status (failure)
+      if: ${{ failure() && env.SB_PUBLISH == 'true' && env.SB_MODE == 'artifact' && env.SB_CREATE_DEPLOYMENT == 'true' && steps.create-deployment.outputs.deployment_id != '' }}
+      shell: bash
+      env:
+        ACTION: update
+        GITHUB_TOKEN: ${{ github.token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        DEPLOYMENT_ID: ${{ steps.create-deployment.outputs.deployment_id }}
+        DEPLOYMENT_STATE: failure
+        ENVIRONMENT_URL: ${{ env.SB_ENVIRONMENT_URL }}
+        LOG_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        DEPLOYMENT_DESCRIPTION: ${{ env.SB_ENVIRONMENT_NAME || 'github-pages' }} deployment failed
+      run: node "${{ github.action_path }}/src/github-deployments.js"
 
     - name: Reject directory mode in composite action
       if: ${{ env.SB_MODE == 'directory' }}

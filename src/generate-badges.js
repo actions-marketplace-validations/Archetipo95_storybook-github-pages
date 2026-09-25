@@ -143,11 +143,78 @@ const IGNORED_DIRS = new Set([
 
 const COMPONENT_EXTENSIONS = new Set(['.vue', '.jsx', '.tsx', '.svelte']);
 
+export function normalizeRepoPathFilters(value) {
+  if (value === undefined || value === null || value === '') return [];
+  const candidates = Array.isArray(value) ? value : String(value).split(/\r?\n|,/);
+  return candidates
+    .map(item => String(item).trim())
+    .filter(Boolean)
+    .map(item => item.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\//, ''));
+}
+
+function escapeGlobPattern(value) {
+  return String(value).replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
+}
+
+function globToRegExp(pattern) {
+  const normalized = String(pattern).trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\//, '');
+  if (!normalized) return /^$/;
+
+  let regex = '';
+  for (let index = 0; index < normalized.length; index++) {
+    const char = normalized[index];
+
+    if (char === '*') {
+      if (normalized[index + 1] === '*') {
+        if (normalized[index + 2] === '/') {
+          regex += '(?:.*/)?';
+          index += 2;
+          continue;
+        }
+        regex += '.*';
+        index += 1;
+        continue;
+      }
+      regex += '[^/]*';
+      continue;
+    }
+
+    if (char === '?') {
+      regex += '[^/]';
+      continue;
+    }
+
+    regex += escapeGlobPattern(char);
+  }
+
+  return new RegExp(`^${regex}$`);
+}
+
+export function matchesRepoPathFilter(relativePath, pattern) {
+  if (!relativePath || !pattern) return false;
+  const normalizedPath = String(relativePath).replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\//, '');
+  const normalizedPattern = String(pattern).trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\//, '');
+  if (!normalizedPattern) return false;
+  return globToRegExp(normalizedPattern).test(normalizedPath);
+}
+
+export function matchesAnyRepoPathFilter(relativePath, patterns) {
+  const normalizedPatterns = normalizeRepoPathFilters(patterns);
+  return normalizedPatterns.some(pattern => matchesRepoPathFilter(relativePath, pattern));
+}
+
 /**
  * Counts total framework component files in workspace to compare against covered components.
  */
-export function countWorkspaceComponents(workspaceRoot = process.cwd(), maxDepth = 6) {
+export function countWorkspaceComponents(
+  workspaceRoot = process.cwd(),
+  maxDepth = 6,
+  includePaths = [],
+  ignorePaths = []
+) {
   if (!workspaceRoot || !fs.existsSync(workspaceRoot)) return 0;
+  const includePatterns = normalizeRepoPathFilters(includePaths);
+  const ignorePatterns = normalizeRepoPathFilters(ignorePaths);
   let count = 0;
 
   function scan(dir, depth) {
@@ -177,7 +244,13 @@ export function countWorkspaceComponents(workspaceRoot = process.cwd(), maxDepth
             !lowerName.includes('.spec.') &&
             !lowerName.endsWith('.d.ts')
           ) {
-            count++;
+            const relativePath = path.relative(workspaceRoot, fullPath).replace(/\\/g, '/');
+            const matchesInclude =
+              includePatterns.length === 0 || matchesAnyRepoPathFilter(relativePath, includePatterns);
+            const matchesIgnore = matchesAnyRepoPathFilter(relativePath, ignorePatterns);
+            if (matchesInclude && !matchesIgnore) {
+              count++;
+            }
           }
         }
       }
@@ -191,7 +264,11 @@ export function countWorkspaceComponents(workspaceRoot = process.cwd(), maxDepth
 /**
  * Extracts story counts and component counts from static Storybook output.
  */
-export function extractStorybookMetrics(staticDir, workspaceRoot = process.cwd()) {
+export function extractStorybookMetrics(
+  staticDir,
+  workspaceRoot = process.cwd(),
+  { includePaths = [], ignorePaths = [] } = {}
+) {
   let storiesCount = 0;
   let componentsCount = 0;
   let docsCount = 0;
@@ -251,7 +328,7 @@ export function extractStorybookMetrics(staticDir, workspaceRoot = process.cwd()
   }
 
   const storybookVersion = extractStorybookVersion(workspaceRoot);
-  const workspaceTotal = countWorkspaceComponents(workspaceRoot);
+  const workspaceTotal = countWorkspaceComponents(workspaceRoot, 6, includePaths, ignorePaths);
   const totalComponents = Math.max(componentsCount, workspaceTotal);
   const coveragePercent =
     totalComponents > 0 ? Math.min(100, Math.round((componentsCount / totalComponents) * 100)) : 100;
@@ -394,7 +471,9 @@ export function generateBadges({
   buildMessage = '',
   buildState = '',
   statusState = '',
-  testResultsPath = ''
+  testResultsPath = '',
+  coverageIncludePaths = [],
+  coverageIgnorePaths = []
 } = {}) {
   if (!staticDir || typeof staticDir !== 'string') {
     throw new Error('generateBadges requires a valid staticDir');
@@ -426,7 +505,10 @@ export function generateBadges({
     // Non-fatal
   }
 
-  const metrics = extractStorybookMetrics(staticAbs, workspaceRoot);
+  const metrics = extractStorybookMetrics(staticAbs, workspaceRoot, {
+    includePaths: coverageIncludePaths,
+    ignorePaths: coverageIgnorePaths
+  });
   const testResults = testResultsPath ? readTestResultsFile(testResultsPath, workspaceRoot) : null;
 
   const shortSha = commitSha ? commitSha.slice(0, 7) : '';
@@ -666,6 +748,8 @@ if (process.argv[1] && process.argv[1].endsWith('generate-badges.js')) {
   const buildState = process.env.SB_BUILD_STATE || '';
   const statusState = process.env.SB_STATUS_STATE || '';
   const testResultsPath = process.env.SB_TEST_RESULTS_PATH || '';
+  const coverageIncludePaths = process.env.SB_COVERAGE_INCLUDE_PATHS || '';
+  const coverageIgnorePaths = process.env.SB_COVERAGE_IGNORE_PATHS || '';
 
   try {
     const result = generateBadges({
@@ -679,7 +763,9 @@ if (process.argv[1] && process.argv[1].endsWith('generate-badges.js')) {
       buildMessage,
       buildState,
       statusState,
-      testResultsPath
+      testResultsPath,
+      coverageIncludePaths: coverageIncludePaths ? coverageIncludePaths.split(/\r?\n|,/) : [],
+      coverageIgnorePaths: coverageIgnorePaths ? coverageIgnorePaths.split(/\r?\n|,/) : []
     });
 
     console.log(`✅ Storybook badges generated in "${result.outDir}":`);

@@ -27,7 +27,7 @@ permissions:
 jobs:
   build:
     name: Build & validate Storybook (untrusted)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -57,6 +57,7 @@ jobs:
           path: 'test/fixtures/sample-storybook'
           package_manager: 'npm'
           publish: 'false'
+          smoke_test: 'true'
 
       # Reuses the public, supported preview-build action - the same one
       # documented for external consumers - so this reference pipeline never
@@ -69,3 +70,4 @@ jobs:
         with:
           source_path: 'test/fixtures/sample-storybook'
           preview_root: ${{ steps.config.outputs.preview_root }}
+          smoke_test: 'true'

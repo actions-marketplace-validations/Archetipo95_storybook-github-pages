@@ -17,6 +17,10 @@ inputs:
     description: 'Retention days for open PR previews (0 disables age-based pruning)'
     required: false
     default: '30'
+  warning_days_before_cleanup:
+    description: 'Days before cleanup to warn in the PR comment (0 disables warnings)'
+    required: false
+    default: '3'
 runs:
   using: composite
   steps:
@@ -26,6 +30,7 @@ runs:
         PAGES_BRANCH: ${{ inputs.pages_branch }}
         PREVIEW_ROOT: ${{ inputs.preview_root }}
         PREVIEW_RETENTION_DAYS: ${{ inputs.retention_days }}
+        WARNING_DAYS_BEFORE_CLEANUP: ${{ inputs.warning_days_before_cleanup }}
         GITHUB_TOKEN: ${{ github.token }}
         GITHUB_REPOSITORY: ${{ github.repository }}
       run: node "${{ github.action_path }}/../src/preview-janitor.js"

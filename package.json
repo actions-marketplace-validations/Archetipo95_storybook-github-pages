@@ -1,14 +1,16 @@
 {
   "name": "storybook-github-pages",
-  "version": "1.6.0",
+  "version": "1.9.13",
   "description": "Deploy Storybook to GitHub Pages with secure reusable workflows and Bitovi compatibility",
   "main": "src/config.js",
   "type": "module",
   "scripts": {
     "test": "node --test test/*.test.js",
+    "test:coverage": "node --test --experimental-test-coverage test/*.test.js",
     "lint": "eslint src/ test/*.test.js",
     "format": "prettier --check \"**/*.{js,json,yml,yaml,md}\"",
     "format:fix": "prettier --write \"**/*.{js,json,yml,yaml,md}\"",
+    "prepare-release": "node scripts/prepare-release.js",
     "validate-artifact": "node src/validate-artifact.js",
     "validate-config": "node src/config.js",
     "generate-badges": "node src/generate-badges.js"
@@ -32,6 +34,6 @@
   "devDependencies": {
     "eslint": "^10.10.0",
     "globals": "^17.12.0",
-    "prettier": "^3.9.6"
+    "prettier": "^3.9.7"
   }
 }

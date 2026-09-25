@@ -112,6 +112,29 @@ export function roughCurve(points, { roughness = 0.8, random = Math.random } = {
 }
 
 /**
+ * Keeps the chart focused on metric changes while preserving the latest snapshot.
+ */
+export function compactHistoryForChart(history = []) {
+  const compact = [];
+
+  for (const entry of history) {
+    const previous = compact[compact.length - 1];
+    const changed =
+      !previous ||
+      previous.components !== entry.components ||
+      previous.totalComponents !== entry.totalComponents ||
+      previous.coveragePercent !== entry.coveragePercent;
+
+    if (changed) compact.push(entry);
+  }
+
+  const latest = history[history.length - 1];
+  if (latest && compact[compact.length - 1] !== latest) compact.push(latest);
+
+  return compact;
+}
+
+/**
  * Renders a complete hand-drawn growth chart SVG.
  */
 export function renderHandDrawnChartSvg({
@@ -151,10 +174,11 @@ export function renderHandDrawnChartSvg({
     version: entry.version || ''
   }));
 
-  const hasTotalComponents = validHistory.some(d => d.totalComponents !== undefined && d.totalComponents > 0);
+  const chartHistory = compactHistoryForChart(validHistory);
+  const hasTotalComponents = chartHistory.some(d => d.totalComponents !== undefined && d.totalComponents > 0);
 
   // Determine Y domain
-  const maxVal = Math.max(5, ...validHistory.map(d => Math.max(d.stories, d.components, d.totalComponents || 0)));
+  const maxVal = Math.max(5, ...chartHistory.map(d => Math.max(d.components, d.totalComponents || 0)));
   // Round maxVal up to nice round number
   const yMax = Math.ceil(maxVal * 1.15);
 
@@ -169,17 +193,16 @@ export function renderHandDrawnChartSvg({
   }
 
   // Calculate coordinates for series
-  const n = validHistory.length;
+  const n = chartHistory.length;
   const getX = idx => {
     if (n === 1) return padding.left + plotWidth / 2;
     return padding.left + (idx / (n - 1)) * plotWidth;
   };
   const getY = val => padding.top + plotHeight - (val / yMax) * plotHeight;
 
-  const storiesPoints = validHistory.map((d, i) => ({ x: getX(i), y: getY(d.stories), ...d }));
-  const componentsPoints = validHistory.map((d, i) => ({ x: getX(i), y: getY(d.components), ...d }));
+  const componentsPoints = chartHistory.map((d, i) => ({ x: getX(i), y: getY(d.components), ...d }));
   const totalComponentsPoints = hasTotalComponents
-    ? validHistory.map((d, i) => ({
+    ? chartHistory.map((d, i) => ({
         x: getX(i),
         y: getY(d.totalComponents !== undefined ? d.totalComponents : d.components),
         ...d
@@ -223,7 +246,7 @@ export function renderHandDrawnChartSvg({
 
   const xTicks = xTickIndices.map(idx => ({
     x: getX(idx),
-    label: validHistory[idx].date,
+    label: chartHistory[idx].date,
     tickD: roughLine(getX(idx), padding.top + plotHeight, getX(idx), padding.top + plotHeight + 6, {
       roughness: 0.8,
       overshoot: 1,
@@ -232,8 +255,6 @@ export function renderHandDrawnChartSvg({
   }));
 
   // Curves
-  const storiesPath1 = roughCurve(storiesPoints, { roughness: 1.0, random });
-  const storiesPath2 = roughCurve(storiesPoints, { roughness: 0.7, random });
   const componentsPath1 = roughCurve(componentsPoints, { roughness: 1.0, random });
   const componentsPath2 = roughCurve(componentsPoints, { roughness: 0.7, random });
   const totalComponentsPath1 = hasTotalComponents ? roughCurve(totalComponentsPoints, { roughness: 1.0, random }) : '';
@@ -242,8 +263,8 @@ export function renderHandDrawnChartSvg({
   // Legend box (top left of plot)
   const legendX = padding.left + 15;
   const legendY = padding.top + 12;
-  const legendW = hasTotalComponents ? 260 : 220;
-  const legendH = hasTotalComponents ? 80 : 58;
+  const legendW = 300;
+  const legendH = hasTotalComponents ? 58 : 38;
   const legendBoxPath = roughRect(legendX, legendY, legendW, legendH, { roughness: 0.9, overshoot: 2, random });
 
   const safeTitle = escapeXml(title);
@@ -259,9 +280,8 @@ export function renderHandDrawnChartSvg({
         --text-primary: #0f172a;
         --text-secondary: #475569;
         --grid-color: #e2e8f0;
-        --stories-color: #ff4785;
-        --components-color: #0288d1;
-        --total-color: #8b5cf6;
+        --components-color: #16a34a;
+        --total-color: #dc2626;
         --legend-bg: #ffffff;
       }
       @media (prefers-color-scheme: dark) {
@@ -271,9 +291,8 @@ export function renderHandDrawnChartSvg({
           --text-primary: #f0f6fc;
           --text-secondary: #8b949e;
           --grid-color: #21262d;
-          --stories-color: #ff6097;
-          --components-color: #38bdf8;
-          --total-color: #a78bfa;
+          --components-color: #22c55e;
+          --total-color: #f87171;
           --legend-bg: #161b22;
         }
       }
@@ -286,9 +305,8 @@ export function renderHandDrawnChartSvg({
           --text-primary: #f0f6fc;
           --text-secondary: #8b949e;
           --grid-color: #21262d;
-          --stories-color: #ff6097;
-          --components-color: #38bdf8;
-          --total-color: #a78bfa;
+          --components-color: #22c55e;
+          --total-color: #f87171;
           --legend-bg: #161b22;
         }
       `
@@ -300,9 +318,8 @@ export function renderHandDrawnChartSvg({
           --text-primary: #0f172a;
           --text-secondary: #475569;
           --grid-color: #e2e8f0;
-          --stories-color: #ff4785;
-          --components-color: #0288d1;
-          --total-color: #8b5cf6;
+          --components-color: #16a34a;
+          --total-color: #dc2626;
           --legend-bg: #ffffff;
         }
       `
@@ -310,9 +327,8 @@ export function renderHandDrawnChartSvg({
       }
       .axis { stroke: var(--border-color); stroke-width: 2.2; fill: none; stroke-linecap: round; stroke-linejoin: round; }
       .grid { stroke: var(--grid-color); stroke-width: 1.2; stroke-dasharray: 4,4; fill: none; }
-      .stories-line { stroke: var(--stories-color); stroke-width: 2.8; fill: none; stroke-linecap: round; stroke-linejoin: round; }
       .components-line { stroke: var(--components-color); stroke-width: 2.8; fill: none; stroke-linecap: round; stroke-linejoin: round; }
-      .total-line { stroke: var(--total-color); stroke-width: 2.4; stroke-dasharray: 6,4; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+      .total-line { stroke: var(--total-color); stroke-width: 2.8; fill: none; stroke-linecap: round; stroke-linejoin: round; }
       .legend-box { stroke: var(--border-color); stroke-width: 1.6; fill: var(--legend-bg); }
       .title-text { fill: var(--text-primary); font-size: 20px; font-weight: bold; text-anchor: middle; }
       .label-text { fill: var(--text-secondary); font-size: 13px; font-weight: 500; }
@@ -375,9 +391,6 @@ export function renderHandDrawnChartSvg({
     <path d="${componentsPath1}" class="components-line" />
     <path d="${componentsPath2}" class="components-line" opacity="0.6" />
 
-    <!-- Stories Curve -->
-    <path d="${storiesPath1}" class="stories-line" />
-    <path d="${storiesPath2}" class="stories-line" opacity="0.6" />
   </g>
 
   <!-- Data Point Markers -->
@@ -400,13 +413,6 @@ export function renderHandDrawnChartSvg({
     `
       )
       .join('')}
-    ${storiesPoints
-      .map(
-        p => `
-      <circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="4.5" fill="var(--stories-color)" stroke="var(--bg-color)" stroke-width="1.5" />
-    `
-      )
-      .join('')}
   </g>
 
   <!-- Legend Box -->
@@ -414,20 +420,16 @@ export function renderHandDrawnChartSvg({
     <rect x="${legendX}" y="${legendY}" width="${legendW}" height="${legendH}" rx="4" fill="var(--legend-bg)" />
     <path d="${legendBoxPath}" class="legend-box" fill="none" />
 
-    <!-- Stories Legend Item -->
-    <rect x="${legendX + 14}" y="${legendY + 12}" width="14" height="10" rx="2" fill="var(--stories-color)" />
-    <text x="${legendX + 36}" y="${legendY + 21}" class="label-text" font-weight="bold">Stories (${latestEntry.stories})</text>
-
     <!-- Covered Components Legend Item -->
-    <rect x="${legendX + 14}" y="${legendY + 32}" width="14" height="10" rx="2" fill="var(--components-color)" />
-    <text x="${legendX + 36}" y="${legendY + 41}" class="label-text" font-weight="bold">Covered Components (${latestEntry.components}${latestEntry.coveragePercent !== undefined ? ` • ${latestEntry.coveragePercent}%` : ''})</text>
+    <rect x="${legendX + 14}" y="${legendY + 12}" width="14" height="10" rx="2" fill="var(--components-color)" />
+    <text x="${legendX + 36}" y="${legendY + 21}" class="label-text" font-weight="bold">Covered Components (${latestEntry.components}${latestEntry.coveragePercent !== undefined ? ` • ${latestEntry.coveragePercent}%` : ''})</text>
 
     ${
       hasTotalComponents
         ? `
     <!-- Total Components Legend Item -->
-    <rect x="${legendX + 14}" y="${legendY + 52}" width="14" height="10" rx="2" fill="var(--total-color)" />
-    <text x="${legendX + 36}" y="${legendY + 61}" class="label-text" font-weight="bold">Total Components (${latestEntry.totalComponents || latestEntry.components})</text>
+    <rect x="${legendX + 14}" y="${legendY + 32}" width="14" height="10" rx="2" fill="var(--total-color)" />
+    <text x="${legendX + 36}" y="${legendY + 41}" class="label-text" font-weight="bold">Total Components (${latestEntry.totalComponents || latestEntry.components})</text>
     `
         : ''
     }
@@ -497,6 +499,7 @@ export function generateStatsGraph({
   siteUrl = '',
   basePath = '',
   commitSha = process.env.GITHUB_SHA || '',
+  currentSnapshot = null,
   theme = 'auto'
 } = {}) {
   if (!staticDir || typeof staticDir !== 'string') {
@@ -553,10 +556,25 @@ export function generateStatsGraph({
     }
   }
 
-  // 2. Extract current metrics
-  const metrics = extractStorybookMetrics(staticAbs, workspaceRoot);
+  // 2. Determine the current snapshot to append to history. When the caller
+  // supplies `currentSnapshot` (the trusted publisher does, from the
+  // artifact the untrusted build already computed against the real PR
+  // source), use it verbatim instead of recomputing: at publish time
+  // `staticDir`/`workspaceRoot` are only the built static output, not the
+  // PR's source tree, so a fresh scan would silently undercount
+  // `totalComponents`/`coveragePercent`.
+  const metrics = currentSnapshot
+    ? {
+        storiesCount: Number(currentSnapshot.stories || 0),
+        componentsCount: Number(currentSnapshot.components || 0),
+        totalComponents: currentSnapshot.totalComponents,
+        coveragePercent: currentSnapshot.coveragePercent,
+        docsCount: Number(currentSnapshot.docs || 0),
+        storybookVersion: currentSnapshot.version || ''
+      }
+    : extractStorybookMetrics(staticAbs, workspaceRoot);
 
-  const currentSnapshot = {
+  const snapshotForLedger = currentSnapshot || {
     timestamp: new Date().toISOString(),
     date: new Date().toISOString().slice(0, 10),
     commit: commitSha ? commitSha.slice(0, 7) : '',
@@ -570,7 +588,7 @@ export function generateStatsGraph({
 
   const updatedHistory = updateHistoryLedger({
     existingHistory,
-    currentSnapshot
+    currentSnapshot: snapshotForLedger
   });
 
   // 3. Write history.json

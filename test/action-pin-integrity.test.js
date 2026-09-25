@@ -137,3 +137,92 @@ test('preview-publisher pin resolves alongside the src it depends on', () => {
   // Guard against ever regressing to the known-bad pre-preview-publisher pin from #35.
   assert.notEqual(sha, '6fdc8e329e5109026e6f0312f3886c1e64328719');
 });
+
+// Regression test for the live v1.9.3 bug: the `preview-publisher` pin above
+// resolves the *entire* composite action, including the version of
+// `src/preview-publish.js` and `src/generate-stats.js` it runs, at the
+// pinned commit - independent of which reusable-workflow tag (e.g. `@v1.9.3`)
+// a consumer invoked. #124 fixed `publishPreview` to reuse the untrusted
+// build's own current-PR stats snapshot instead of recomputing metrics
+// against the source-less checked-out static output, but the pin above was
+// never bumped past its pre-#124 value, so every consumer kept running the
+// old recompute logic (reproducing the exact "coverage always 100%" bug)
+// even after upgrading to v1.9.2/v1.9.3. This proves the pinned commit's
+// *content* - not just its existence - includes the #124 fix.
+test('preview-publisher pin content includes the current-PR snapshot preservation fix (#124)', () => {
+  const workflow = fs.readFileSync(path.join(repoRoot, '.github/workflows/pr-preview-publish.yml'), 'utf8');
+  const match = workflow.match(/Archetipo95\/storybook-github-pages\/preview-publisher@([a-f0-9]{40})/);
+  assert.ok(match, 'expected a SHA-pinned preview-publisher reference in pr-preview-publish.yml');
+  const sha = match[1];
+
+  const previewPublishSrc = execFileSync('git', ['show', `${sha}:src/preview-publish.js`], {
+    cwd: repoRoot
+  }).toString();
+  assert.match(
+    previewPublishSrc,
+    /readArtifactCurrentSnapshot/,
+    `pinned commit ${sha} predates #124: it recomputes stats from the checked-out static output instead of reusing ` +
+      "the untrusted build's own current-PR snapshot, undercounting totalComponents/coveragePercent"
+  );
+
+  const generateStatsSrc = execFileSync('git', ['show', `${sha}:src/generate-stats.js`], {
+    cwd: repoRoot
+  }).toString();
+  assert.match(
+    generateStatsSrc,
+    /currentSnapshot/,
+    `pinned commit ${sha} predates #124: generateStatsGraph has no currentSnapshot bypass for the trusted publisher`
+  );
+});
+
+test('preview-publisher pin content includes compact stats graph rendering', () => {
+  const workflow = fs.readFileSync(path.join(repoRoot, '.github/workflows/pr-preview-publish.yml'), 'utf8');
+  const match = workflow.match(/Archetipo95\/storybook-github-pages\/preview-publisher@([a-f0-9]{40})/);
+  assert.ok(match, 'expected a SHA-pinned preview-publisher reference in pr-preview-publish.yml');
+  const sha = match[1];
+
+  const generateStatsSrc = execFileSync('git', ['show', `${sha}:src/generate-stats.js`], {
+    cwd: repoRoot
+  }).toString();
+  assert.match(
+    generateStatsSrc,
+    /compactHistoryForChart/,
+    `pinned commit ${sha} predates compact stats graph rendering and will render every no-op deploy point`
+  );
+  assert.doesNotMatch(
+    generateStatsSrc,
+    /Stories \(\$\{latestEntry\.stories\}\)|stories-line|storiesPoints/,
+    `pinned commit ${sha} still renders the stories series in PR preview graphs`
+  );
+  assert.match(
+    generateStatsSrc,
+    /--total-color: #dc2626/,
+    `pinned commit ${sha} does not render total components as the red series`
+  );
+  assert.match(
+    generateStatsSrc,
+    /--components-color: #16a34a/,
+    `pinned commit ${sha} does not render covered components as the green series`
+  );
+});
+
+test('preview-cleanup pin content includes best-effort optional post-cleanup updates', () => {
+  const workflow = fs.readFileSync(path.join(repoRoot, '.github/workflows/pr-preview-cleanup.yml'), 'utf8');
+  const match = workflow.match(/Archetipo95\/storybook-github-pages\/preview-cleanup@([a-f0-9]{40})/);
+  assert.ok(match, 'expected a SHA-pinned preview-cleanup reference in pr-preview-cleanup.yml');
+  const sha = match[1];
+
+  const previewCleanupSrc = execFileSync('git', ['show', `${sha}:src/preview-cleanup.js`], {
+    cwd: repoRoot
+  }).toString();
+  assert.match(
+    previewCleanupSrc,
+    /requestCleanupPagesRebuild/,
+    `pinned commit ${sha} predates the best-effort Pages rebuild handling`
+  );
+  assert.match(
+    previewCleanupSrc,
+    /requestCleanupCommentUpdate/,
+    `pinned commit ${sha} predates the best-effort preview comment update handling`
+  );
+});

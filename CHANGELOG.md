@@ -7,6 +7,122 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+## [1.9.13] - 2026-09-24
+
+### Changed
+
+- Update the reusable PR preview publish workflow's internal `preview-publisher` pin so PR preview graphs use the component-only red/green renderer.
+
+## [1.9.12] - 2026-09-24
+
+### Changed
+
+- Plot total components in red and covered components in green in `stats/history.svg`; story counts remain in badges and JSON but are no longer plotted.
+
+## [1.9.11] - 2026-09-24
+
+### Changed
+
+- Update the reusable PR preview publish workflow's internal `preview-publisher` pin so PR preview graphs also use compact stats graph rendering.
+
+## [1.9.10] - 2026-09-24
+
+### Changed
+
+- Render `stats/history.svg` with metric-changing snapshots plus the latest snapshot, while keeping `stats/history.json` as the complete deployment ledger.
+
+## [1.9.9] - 2026-09-24
+
+### Fixed
+
+- Prevent preview metadata test fixtures from leaking synthetic PR numbers and SHAs into real CI job summaries.
+- Make reusable PR preview cleanup tolerate missing numeric `pr_number` inputs and optional post-cleanup Pages/comment update failures.
+- Update the reusable cleanup workflow's internal `preview-cleanup` pin so consumers receive the resilient cleanup behavior.
+
+## [1.9.8] - 2026-09-24
+
+### Fixed
+
+- **Preview Cleanup Rebuild Resilience**: Closing a PR still removes its preview directory and updates preview metadata, but a transient GitHub Pages rebuild failure for that intermediate cleanup commit is now reported as an explicit warning instead of failing the whole cleanup workflow. This avoids false-negative cleanup runs when a production deploy immediately follows and succeeds.
+
+## [1.9.7] - 2026-09-24
+
+### Added
+
+- **Lean Testing Strategy and Demo Canary Flow**: Documented the native `node:test` testing strategy, added focused smoke-test coverage for Storybook story glob selection and missing-story failures, and added a release checklist that validates candidate refs through the external `storybook-vue-demo` Action Canary workflow before tagging.
+
+## [1.9.6] - 2026-09-23
+
+### Fixed
+
+- **Reference/demo workflows now exercise the smoke-test gate**: `pr-preview-build.yml` enables `smoke_test: 'true'` on both the root composite action and the `preview-build` action so every PR to this repository actually runs the opt-in Playwright smoke test end to end, instead of only shipping the feature unused. The bundled `test/fixtures/sample-storybook` fixture now includes a minimal story-sidebar element so the smoke test's manager/sidebar assertion has something to find. Also fixed a bug where the smoke test's Playwright bootstrap loader imported the CJS entry point by file path, bypassing `package.json` `"exports"` conditions and losing the top-level `chromium` export, causing every real (non-mocked) smoke test run to fail with "Cannot read properties of undefined (reading 'launch')".
+
+## [1.9.5] - 2026-09-23
+
+### Added
+
+- **Optional Playwright Smoke-Test Gate (#48)**: Added `smoke_test`, `smoke_test_stories`, and `smoke_test_timeout_ms` inputs. When enabled, built Storybook output is served on loopback and checked with Playwright for manager/sidebar mounting, canvas loading, browser errors, failed requests, and selected story ids before validation or publishing.
+
+## [1.9.4] - 2026-09-22
+
+### Fixed
+
+- **Stale `preview-publisher` Internal Pin Reintroduced the Pre-#124 Recompute Bug (#126)**: `.github/workflows/pr-preview-publish.yml` pinned the `preview-publisher` composite action to a commit predating #124's stats-snapshot-preservation fix. Because GitHub Actions resolves a SHA-pinned sub-action independently of the reusable workflow's own tag, every v1.9.2/v1.9.3 consumer kept running the old recompute logic and continued to see coverage collapse to 100% on PR previews, even though the fix had already shipped. Repinned `preview-publisher` to a commit that contains the #124 fix, and added a content-level regression test (`test/action-pin-integrity.test.js`) that inspects the pinned commit's actual `src/preview-publish.js`/`src/generate-stats.js` source for the fix markers, rather than only checking the pinned commit exists.
+
+## [1.9.3] - 2026-09-22
+
+### Fixed
+
+- **Preview Stats Snapshot Preservation (#124)**: Trusted preview publishing no longer recomputes current-PR component/coverage metrics from the checked-out (source-less) static output directory, which previously undercounted `totalComponents` and reported inflated coverage. It now reuses the untrusted build's own accurate current-PR snapshot from the artifact's `stats/history.json`, merging it with the trusted base Pages history. Stats regeneration is skipped, rather than fabricated, when the artifact has no snapshot.
+
+## [1.9.2] - 2026-09-22
+
+### Fixed
+
+- **Reusable Workflow Resolver Checkout (#122)**: The `PR Preview Publish` reusable workflow's `gate` job now explicitly checks out this repository (pinned to a commit) before importing its pull-request-identity resolver, instead of relying on an ambient `actions/checkout` that resolves to the _caller's_ repository when invoked via `workflow_call`. This fixes a v1.9.1 regression where any consumer repository failed with `Cannot find module '.../src/resolve-run-context.js'`.
+
+## [1.9.1] - 2026-09-22
+
+### Fixed
+
+- **PR Preview Stats History (#120)**: Trusted preview publishing now regenerates growth statistics only after provenance and digest validation, using the Pages history for the pull request's base ref instead of artifact-provided or unrelated root history. Custom `stats_directory` and `generate_stats_graph` settings are forwarded through the reusable workflow.
+
+### Changed
+
+- **Internal Action Pins (#120)**: Refreshed the reusable deployment, preview cleanup, preview janitor, and preview publisher workflows to reviewed implementation commits containing the v1.9.0 release and stats-history fix.
+
+## [1.9.0] - 2026-09-22
+
+### Fixed
+
+- **Explicit Pages Rebuild Verification (#109)**: Explicit rebuilds now wait for GitHub Pages to successfully build the exact commit pushed to the Pages branch, failing with diagnostics when the build is missing, errored, or cannot be queried.
+- **PR Preview Identity Provenance (#115)**: Trusted preview publication now derives the pull request number from the run's exact uploaded artifact and cross-checks it against GitHub's associated pull requests, avoiding ambiguous `pull_requests[0]` resolution when multiple pull requests share a head SHA.
+
+### Added
+
+- **Reusable Workflow Build Caching (#43)**: Added opt-out dependency caching for npm, Yarn, pnpm, and Bun plus Storybook compilation caches, with configurable cache key prefixes. Untrusted PR preview builds remain cache-free.
+- **Trusted PR Preview Passcode Gate**: Added optional `enable_passcode_gate`, `passcode_session_hours`, and trusted `passcode_hash` inputs to the reusable PR preview publisher and `preview-publisher` action. The hash stays in the trusted publisher context, while the existing gate injector runs only after provenance and content-digest validation and immediately before publication.
+
+### Changed
+
+- **GitHub Actions Dependency Updates**: Updated the Pages artifact upload and deployment actions to v5 and refreshed the Prettier development dependency to 3.9.7. Internal publisher, preview cleanup, and preview janitor pins were advanced to the reviewed release commit.
+
+## [1.8.3] - 2026-09-15
+
+### Fixed
+
+- **Directory Publisher Release Pin**: Updated the reusable directory deployment workflow to pin the `publisher` action to the reviewed release commit containing the shared Pages branch writer, so directory deployments use the same serialized write, retry, and rebuild behavior as other branch mutations.
+- **Release Metadata**: Aligned package metadata and all documented action examples with the current stable release.
+
+## [1.6.1] - 2026-09-15
+
+### Fixed
+
+- **Interaction-Test Badge Action Input**: Exposed the documented `test_results_path` input in the `publisher` and `preview-build` composite actions so consumers can generate `tests.svg` and `tests.json` badges.
+- **PR Preview Cleanup Permissions (#90)**: Granted `deployments: write` to the reusable cleanup and janitor workflows and documented the permission for direct composite-action consumers, preventing successful preview removals from failing during deployment deactivation.
+
 ## [1.6.0] - 2026-09-14
 
 ### Added

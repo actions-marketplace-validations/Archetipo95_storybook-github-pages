@@ -7,6 +7,10 @@
 </head>
 <body>
   <h1>Sample Storybook Fixture</h1>
+  <!-- Minimal stand-in for the real Storybook manager's story sidebar, so the
+       opt-in Playwright smoke test's manager/sidebar assertion has something
+       to find when run against this reference fixture. -->
+  <div id="storybook-explorer-tree" role="tree"></div>
   <div id="root"></div>
 </body>
 </html>

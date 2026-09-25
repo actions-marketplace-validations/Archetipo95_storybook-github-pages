@@ -10,10 +10,12 @@ import {
   renderBadgeSvg,
   extractStorybookVersion,
   extractStorybookMetrics,
+  countWorkspaceComponents,
   buildBadgeMarkdown,
   generateBadges,
   parseTestResultsData
 } from '../src/generate-badges.js';
+import { parseSimpleYaml } from '../src/config.js';
 
 test('estimateTextWidth returns reasonable widths for various character sets', () => {
   assert.equal(estimateTextWidth(''), 0);
@@ -136,6 +138,49 @@ test('extractStorybookMetrics handles directory with no index.json or stories.js
   assert.equal(metrics.storiesCount, 0);
   assert.equal(metrics.componentsCount, 0);
   assert.equal(metrics.hasStoriesData, false);
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+test('parseSimpleYaml reads block scalar values for coverage path filters', () => {
+  const yaml = `coverage_include_paths: |\n  src/components/**\n  packages/*/src/components/**\ncoverage_ignore_paths: |\n  **/generated/**\n  **/vendor/**\n`;
+  assert.deepEqual(parseSimpleYaml(yaml), {
+    coverage_include_paths: 'src/components/**\npackages/*/src/components/**',
+    coverage_ignore_paths: '**/generated/**\n**/vendor/**'
+  });
+});
+
+test('countWorkspaceComponents honors include and ignore repository-root glob filters', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-badge-coverage-filters-'));
+  fs.mkdirSync(path.join(tmpDir, 'src', 'components'), { recursive: true });
+  fs.mkdirSync(path.join(tmpDir, 'packages', 'app', 'src', 'components'), { recursive: true });
+  fs.mkdirSync(path.join(tmpDir, 'generated', 'vendor'), { recursive: true });
+
+  const files = [
+    'src/components/Button.tsx',
+    'src/components/Card.tsx',
+    'packages/app/src/components/Header.tsx',
+    'generated/vendor/Widget.tsx',
+    'generated/vendor/Widget.stories.tsx',
+    'src/components/Legend.spec.tsx'
+  ];
+
+  for (const file of files) {
+    const full = path.join(tmpDir, file);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, 'export const x = 1;');
+  }
+
+  assert.equal(countWorkspaceComponents(tmpDir), 4);
+  assert.equal(countWorkspaceComponents(tmpDir, 6, ['src/components/**']), 2);
+  assert.equal(countWorkspaceComponents(tmpDir, 6, ['**/src/components/**', 'generated/**'], ['**/vendor/**']), 3);
+
+  const metrics = extractStorybookMetrics(tmpDir, tmpDir, {
+    includePaths: ['**/src/components/**'],
+    ignorePaths: ['**/vendor/**']
+  });
+
+  assert.equal(metrics.totalComponents, 3);
+  assert.equal(metrics.coveragePercent, 0);
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 

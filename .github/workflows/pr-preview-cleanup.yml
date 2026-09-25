@@ -39,10 +39,11 @@ jobs:
     concurrency:
       group: storybook-pages-${{ github.repository }}
       cancel-in-progress: false
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       pages: write
+      deployments: write
     steps:
       # Checks out the default branch only (no `ref:` on a pull_request_target
       # checkout resolves to the base repository's default branch) so the
@@ -134,9 +135,9 @@ jobs:
 
       - name: Remove preview directory for closed pull request
         if: steps.branch_check.outputs.exists == 'true'
-        uses: Archetipo95/storybook-github-pages/preview-cleanup@81658c93c696c9d69f86c2731a1daecff1678111
+        uses: Archetipo95/storybook-github-pages/preview-cleanup@25bce26ade250f866241e4750044d81c9eba3dad
         with:
           pages_repo: ${{ github.workspace }}/pages-repo
           pages_branch: ${{ steps.config.outputs.pages_branch || inputs.pages_branch || 'gh-pages' }}
           preview_root: ${{ steps.config.outputs.preview_root }}
-          pr_number: ${{ inputs.pr_number || github.event.pull_request.number }}
+          pr_number: ${{ inputs.pr_number > 0 && inputs.pr_number || github.event.pull_request.number }}

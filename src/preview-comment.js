@@ -4,6 +4,8 @@
 
 const MARKER_PREFIX = '<!-- storybook-pages-preview:pr-';
 const MARKER_SUFFIX = ' -->';
+const STATUS_MARKER = '<!-- storybook-pages-preview-status -->';
+const STATUS_END_MARKER = '<!-- /storybook-pages-preview-status -->';
 export const PREVIEW_COMMENT_AUTHOR = 'github-actions[bot]';
 
 export function buildMarker(prNumber) {
@@ -12,6 +14,26 @@ export function buildMarker(prNumber) {
     throw new Error(`Invalid PR number for preview comment marker: "${prNumber}"`);
   }
   return `${MARKER_PREFIX}${number}${MARKER_SUFFIX}`;
+}
+
+export function buildExpirationStatus({ expired = false, warningDays = 3 } = {}) {
+  if (expired) {
+    return `${STATUS_MARKER}
+> ⚠️ **This Storybook preview has expired and was removed after being inactive.** Rerun the preview workflow or push a new commit to rebuild it.
+${STATUS_END_MARKER}`;
+  }
+  return `${STATUS_MARKER}
+> ⏳ **This Storybook preview will be removed in ${warningDays} day${warningDays === 1 ? '' : 's'} due to inactivity.** Push a new commit or rerun the preview workflow to keep it available.
+${STATUS_END_MARKER}`;
+}
+
+function replaceExpirationStatus(body, status) {
+  const block = `${STATUS_MARKER}[\\s\\S]*?${STATUS_END_MARKER}`;
+  if (new RegExp(block).test(body)) return body.replace(new RegExp(block), status);
+  const insertionPoint = body.indexOf('\n<sub>');
+  return insertionPoint === -1
+    ? `${body}\n\n${status}`
+    : `${body.slice(0, insertionPoint)}\n\n${status}${body.slice(insertionPoint)}`;
 }
 
 function formatDiff(baseVal, prVal, isPercent = false) {
@@ -223,6 +245,7 @@ export async function upsertPreviewComment({ token, repository, prNumber, body }
   if (!Number.isInteger(number) || number <= 0) {
     throw new Error(`Invalid PR number "${prNumber}"`);
   }
+
   const marker = buildMarker(number);
   if (!body.includes(marker)) {
     throw new Error('Comment body must include the stable preview marker');
@@ -244,6 +267,22 @@ export async function upsertPreviewComment({ token, repository, prNumber, body }
     body: { body }
   });
   return { action: 'created', commentId: created.id };
+}
+
+export async function updatePreviewCommentStatus({ token, repository, prNumber, expired = false, warningDays = 3 }) {
+  const number = Number(prNumber);
+  const marker = buildMarker(number);
+  const existing = await findExistingComment({ token, repository, prNumber: number, marker });
+  if (!existing) return { action: 'missing' };
+  const body = replaceExpirationStatus(existing.body, buildExpirationStatus({ expired, warningDays }));
+  if (body !== existing.body) {
+    await githubRequest(`https://api.github.com/repos/${repository}/issues/comments/${existing.id}`, {
+      token,
+      method: 'PATCH',
+      body: { body }
+    });
+  }
+  return { action: body === existing.body ? 'unchanged' : 'updated', commentId: existing.id };
 }
 
 if (process.argv[1] && process.argv[1].endsWith('preview-comment.js')) {
