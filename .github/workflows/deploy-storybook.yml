@@ -435,7 +435,7 @@ jobs:
           BASE_PATH: ${{ needs.build-and-upload.outputs.base_path }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        uses: Archetipo95/storybook-github-pages/publisher@1a922a815952feaeb895f65b7f5dbf673c2fd204
+        uses: Archetipo95/storybook-github-pages/publisher@e57ca4480e501dcc3f9a32dbba295dc13454a063
         with:
           pages_repo: ${{ github.workspace }}/pages-repo
           source_directory: ${{ github.workspace }}/storybook-static
