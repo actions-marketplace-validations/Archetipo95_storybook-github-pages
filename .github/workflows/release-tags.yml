@@ -1,0 +1,116 @@
+name: Release Tags
+
+# Releases are tagged automatically: when a commit on `main` carries a
+# package.json version that has no `vX.Y.Z` tag yet, this workflow verifies
+# it (tests, CHANGELOG, lockfile), creates the tag, and publishes a GitHub
+# release whose notes are that version's CHANGELOG.md section. Every run also keeps
+# the floating major tag (`v1`) on the newest release of its line, so a
+# missed or drifted major tag is corrected by the next push to `main`.
+#
+# A manually pushed `vX.Y.Z` tag is validated the same way and must be
+# reachable from `main`.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-tags-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Create release tag and update major tag
+    runs-on: ubuntu-24.04
+    permissions:
+      # Required to push the release and major tags and publish the release.
+      contents: write
+    steps:
+      - name: Checkout pushed commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          # Full history and tags are needed to check ancestry against main
+          # and to compare against the existing release tags.
+          fetch-depth: 0
+          # Credentials persist so the tag steps can push.
+          persist-credentials: true
+
+      - name: Plan release tags
+        id: plan
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: EXISTING_TAGS="$(git tag --list 'v*.*.*')" node scripts/release-tag.js
+
+      - name: Set up Node.js
+        if: steps.plan.outputs.verify == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - name: Run release validation suite
+        if: steps.plan.outputs.verify == 'true'
+        env:
+          # Fails the release when an internal action pin runs older code.
+          RELEASE_PIN_CHECK: '1'
+        run: |
+          npm ci
+          npm test
+
+      - name: Verify release commit is on main
+        if: steps.plan.outputs.verify == 'true'
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "Release commit $GITHUB_SHA is not reachable from origin/main." >&2
+            exit 1
+          fi
+
+      - name: Create release tag
+        if: steps.plan.outputs.create_tag == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.plan.outputs.release_tag }}
+        run: |
+          git tag "$RELEASE_TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/$RELEASE_TAG"
+          echo "Created $RELEASE_TAG at $GITHUB_SHA."
+
+      - name: Publish GitHub release
+        if: steps.plan.outputs.verify == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.plan.outputs.release_tag }}
+          LATEST: ${{ steps.plan.outputs.latest }}
+        run: |
+          if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists."
+            exit 0
+          fi
+          node scripts/release-tag.js --notes "${RELEASE_TAG#v}" > "$RUNNER_TEMP/release-notes.md"
+          gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --verify-tag --latest="$LATEST"
+          echo "Published release $RELEASE_TAG (latest: $LATEST)."
+
+      - name: Move major tag to the newest release
+        env:
+          MAJOR_TAG: ${{ steps.plan.outputs.major_tag }}
+          MAJOR_TARGET: ${{ steps.plan.outputs.major_target }}
+        run: |
+          TARGET_SHA="$(git rev-parse "refs/tags/$MAJOR_TARGET^{commit}")"
+          CURRENT_SHA="$(git rev-parse --verify --quiet "refs/tags/$MAJOR_TAG^{commit}" || true)"
+          if [ "$CURRENT_SHA" = "$TARGET_SHA" ]; then
+            echo "$MAJOR_TAG already points at $MAJOR_TARGET ($TARGET_SHA)."
+            exit 0
+          fi
+          if [ -n "$CURRENT_SHA" ] && ! git merge-base --is-ancestor "$CURRENT_SHA" "$TARGET_SHA"; then
+            echo "$MAJOR_TAG ($CURRENT_SHA) is not an ancestor of $MAJOR_TARGET; refusing to move it backwards or sideways." >&2
+            exit 1
+          fi
+          git push --force origin "${TARGET_SHA}:refs/tags/${MAJOR_TAG}"
+          echo "Moved $MAJOR_TAG from ${CURRENT_SHA:-<none>} to $MAJOR_TARGET ($TARGET_SHA)."
+          if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+            echo -e "### Release tags\n\n\`$MAJOR_TAG\` now points at \`$MAJOR_TARGET\` (\`$TARGET_SHA\`).\n" >> "$GITHUB_STEP_SUMMARY"
+          fi

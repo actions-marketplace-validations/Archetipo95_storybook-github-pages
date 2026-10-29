@@ -75,8 +75,8 @@ test('preview-build action.yml is a read-only, untrusted-job-scoped composite ac
   assert.match(content, /run_id:[\s\S]*?default:\s*\$\{\{ github\.run_id \}\}/);
 
   // Reuses existing preview-metadata/validate-artifact internals rather than duplicating logic
-  assert.match(content, /node "\$\{\{ github\.action_path \}\}\/\.\.\/src\/validate-artifact\.js"/);
-  assert.match(content, /node "\$\{\{ github\.action_path \}\}\/\.\.\/src\/preview-metadata\.js"/);
+  assert.match(content, /node "\$GITHUB_ACTION_PATH\/\.\.\/src\/validate-artifact\.js"/);
+  assert.match(content, /node "\$GITHUB_ACTION_PATH\/\.\.\/src\/preview-metadata\.js"/);
 
   // Never references secrets, tokens, or write/publish targets - this must stay usable only
   // as the untrusted build-side of the contract, never as a trusted publisher component.

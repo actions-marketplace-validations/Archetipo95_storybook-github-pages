@@ -39,6 +39,7 @@ test('pr-preview-publish workflow gates on success/event/repository and requires
   assert.match(content, /base_path:/, 'publish must support base_path input');
   assert.match(content, /generate_stats_graph:/, 'publish must support generate_stats_graph input');
   assert.match(content, /stats_directory:/, 'publish must support stats_directory input');
+  assert.match(content, /badges_directory:/, 'publish must support badges_directory input');
   assert.match(content, /managed_directories:/, 'publish must support managed_directories input');
   assert.match(content, /artifact_name:/, 'publish must support artifact_name input');
   assert.match(content, /enable_passcode_gate:/, 'publish must support passcode gate input');
@@ -100,6 +101,11 @@ test('pr-preview-publish workflow gates on success/event/repository and requires
     publishJob,
     /stats_directory: \$\{\{ steps\.config\.outputs\.stats_directory \}\}/,
     'trusted publisher must receive the resolved stats directory'
+  );
+  assert.match(
+    publishJob,
+    /badges_directory: \$\{\{ steps\.config\.outputs\.badges_directory \}\}/,
+    'trusted publisher must receive the resolved badges directory'
   );
 });
 
@@ -187,21 +193,74 @@ test('pr-preview-janitor workflow supports manual dispatch and schedule, never c
   );
 });
 
-test('all trusted write workflows share the same Pages-branch concurrency group to serialize writers', () => {
-  const publish = read('.github/workflows/pr-preview-publish.yml');
-  const cleanup = read('.github/workflows/pr-preview-cleanup.yml');
-  const janitor = read('.github/workflows/pr-preview-janitor.yml');
-  const deploy = read('.github/workflows/deploy-storybook.yml');
+function pagesConcurrencyBlocks(content) {
+  return [...content.matchAll(/^( *)concurrency:\n((?:\1 {2}.*\n)+)/gm)]
+    .map(([, indent, body]) => ({ indent, body }))
+    .filter(({ body }) => body.includes('group: storybook-pages-${{ github.repository }}'));
+}
 
-  const group = 'storybook-pages-${{ github.repository }}';
-  for (const [name, content] of [
-    ['publish', publish],
-    ['cleanup', cleanup],
-    ['janitor', janitor]
+test('trusted Pages writers share one concurrency group that queues instead of replacing pending runs', () => {
+  for (const { file, job } of [
+    { file: '.github/workflows/pr-preview-publish.yml', job: 'publish' },
+    { file: '.github/workflows/pr-preview-cleanup.yml', job: 'cleanup' },
+    { file: '.github/workflows/pr-preview-janitor.yml', job: 'janitor' },
+    { file: '.github/workflows/deploy-storybook.yml' },
+    { file: 'docs/usage.md' }
   ]) {
-    assert.ok(content.includes(`group: ${group}`), `${name} workflow must share the Pages concurrency group`);
+    const content = read(file);
+    const writer = job ? `${file} job "${job}"` : `${file} (workflow level)`;
+    assert.equal(
+      pagesConcurrencyBlocks(content).length,
+      1,
+      `${file} must join the shared Pages concurrency group exactly once`
+    );
+    const [block] = pagesConcurrencyBlocks(job ? extractJobBlock(content, job) : content);
+    assert.equal(block?.indent, job ? '    ' : '', `${writer} must join the shared Pages concurrency group`);
+    assert.match(
+      block.body,
+      /^\s*cancel-in-progress: false$/m,
+      `${writer} must never cancel an in-progress Pages write`
+    );
+    assert.match(
+      block.body,
+      /^\s*queue: max$/m,
+      `${writer} must set queue: max: with GitHub's default single queue, every run that joins the group cancels the pending one, which silently drops PR preview publishes and cleanups`
+    );
   }
-  assert.ok(deploy.includes('group: storybook-pages-${{ github.repository }}'));
+});
+
+function markdownSection(content, heading) {
+  const start = content.indexOf(`### ${heading}`);
+  assert.notEqual(start, -1, `section "${heading}" not found`);
+  const end = content.indexOf('\n### ', start + 1);
+  return content.slice(start, end === -1 ? undefined : end);
+}
+
+test('docs recover a cancelled preview publish without reusing the gate job head SHA snapshot', () => {
+  assert.match(
+    extractJobBlock(read('.github/workflows/pr-preview-publish.yml'), 'publish'),
+    /current_head_sha: \$\{\{ needs\.gate\.outputs\.current_head_sha \}\}/,
+    'the publish job compares against the head SHA the gate job fetched, so re-running publish alone reuses that snapshot'
+  );
+
+  const recovery = markdownSection(read('docs/troubleshooting.md'), '10. PR Preview Publish or Cleanup Cancelled');
+  assert.match(recovery, /Re-run all jobs/, 'recovery must re-run the gate job so it re-reads the PR head');
+  assert.match(
+    recovery,
+    /never use \*\*Re-run failed jobs\*\* \(`gh run rerun <run-id> --failed`\) on a publish run/i,
+    'recovery must warn that re-running only the failed publish job reuses the gate job head SHA'
+  );
+  assert.match(
+    recovery,
+    /never re-run the `publish` job on its own \(\*\*Re-run job\*\* on `publish`, or `gh run rerun --job <publish-job-id>`\)/i,
+    'recovery must warn against re-running publish alone; re-running the gate job also re-runs publish with a fresh head SHA'
+  );
+
+  assert.match(
+    markdownSection(read('docs/pr-previews.md'), 'Stale-run protection'),
+    /re-running only the publish job .*reuses the `gate` job's earlier head SHA snapshot/i,
+    'stale-run docs must say that a publish-only re-run reuses the gate head SHA'
+  );
 });
 
 test('preview target resolution and metadata modules are wired into the workflows and composite actions', () => {

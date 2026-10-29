@@ -35,6 +35,10 @@ inputs:
     description: 'Directory within the static build output to store stats graph and ledger'
     required: false
     default: 'stats'
+  badges_directory:
+    description: 'Badges directory used by the build; excluded from the recomputed bundle size'
+    required: false
+    default: 'badges'
   managed_directories:
     description: 'Comma-separated managed directories preserved during root publication'
     required: false
@@ -117,6 +121,7 @@ runs:
         TRIGGER_PAGES_REBUILD: ${{ inputs.trigger_pages_rebuild }}
         GENERATE_STATS_GRAPH: ${{ inputs.generate_stats_graph }}
         SB_STATS_DIRECTORY: ${{ inputs.stats_directory }}
+        SB_BADGES_DIRECTORY: ${{ inputs.badges_directory }}
         MANAGED_DIRECTORIES: ${{ inputs.managed_directories }}
         TRUSTED_REPOSITORY: ${{ inputs.trusted_repository }}
         TRUSTED_RUN_ID: ${{ inputs.trusted_run_id }}
@@ -134,4 +139,4 @@ runs:
         PASSCODE_SESSION_HOURS: ${{ inputs.passcode_session_hours }}
         GITHUB_TOKEN: ${{ github.token }}
         GITHUB_REPOSITORY: ${{ github.repository }}
-      run: node "${{ github.action_path }}/../src/preview-publish.js"
+      run: node "$GITHUB_ACTION_PATH/../src/preview-publish.js"

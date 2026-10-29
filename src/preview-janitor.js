@@ -187,6 +187,30 @@ export async function runJanitor({
   return { removed: remove, warned: warn, keep, ignored, changed: result.changed, commitSha: result.commitSha };
 }
 
+/**
+ * Updates a preview comment's expiration status without failing the sweep.
+ * The janitor job only holds `pull-requests: read`, so a comment PATCH can be
+ * rejected; directory removal and deployment deactivation have already
+ * happened by then and must not be reported as a failure.
+ */
+export async function requestJanitorCommentUpdate({
+  token,
+  repository,
+  prNumber,
+  expired = false,
+  warningDays,
+  updateStatus = updatePreviewCommentStatus
+}) {
+  try {
+    await updateStatus({ token, repository, prNumber, expired, warningDays });
+    return { ok: true };
+  } catch (error) {
+    const message = `Preview janitor could not update the preview comment for PR #${prNumber}: ${error.message}`;
+    console.warn(message);
+    return { ok: false, message };
+  }
+}
+
 if (process.argv[1] && process.argv[1].endsWith('preview-janitor.js')) {
   const config = resolveConfiguration({
     inputs: {
@@ -237,7 +261,7 @@ if (process.argv[1] && process.argv[1].endsWith('preview-janitor.js')) {
         });
       }
       for (const item of result.warned) {
-        await updatePreviewCommentStatus({
+        await requestJanitorCommentUpdate({
           token: process.env.GITHUB_TOKEN,
           repository: process.env.GITHUB_REPOSITORY,
           prNumber: item.prNumber,
@@ -245,7 +269,7 @@ if (process.argv[1] && process.argv[1].endsWith('preview-janitor.js')) {
         });
       }
       for (const item of result.removed) {
-        await updatePreviewCommentStatus({
+        await requestJanitorCommentUpdate({
           token: process.env.GITHUB_TOKEN,
           repository: process.env.GITHUB_REPOSITORY,
           prNumber: item.prNumber,

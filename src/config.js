@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { normalizeCname } from './cname.js';
 
 export const DEFAULT_CONFIG = {
   version: 1,
@@ -13,6 +14,8 @@ export const DEFAULT_CONFIG = {
   create_deployment: false,
   site_url: '',
   base_path: '',
+  cname: '',
+  preserve_cname: true,
   artifact_name: 'github-pages',
   managed_directories: [],
   package_manager: 'npm',
@@ -32,6 +35,8 @@ export const DEFAULT_CONFIG = {
   smoke_test_stories: 'all',
   smoke_test_timeout_ms: 30000,
   auto_base_url: true,
+  audit_bundle_size: false,
+  bundle_size_max_mb: '',
   build: {
     install_command: null,
     build_command: null
@@ -56,6 +61,7 @@ export function validateRelativeDirectory(value, field = 'target_directory', { a
   const normalized = path.posix.normalize(value.replaceAll('\\', '/'));
   if (
     normalized === '.' ||
+    normalized === '..' ||
     normalized.startsWith('../') ||
     normalized.includes('/../') ||
     normalized.startsWith('/') ||
@@ -110,6 +116,7 @@ export function validateConfig(config, { allowedPackageManagers = ALLOWED_PACKAG
       typeof config.pages_branch !== 'string' ||
       !/^[A-Za-z0-9._/-]+$/.test(config.pages_branch) ||
       config.pages_branch.startsWith('/') ||
+      config.pages_branch.startsWith('-') ||
       config.pages_branch.includes('..')
     ) {
       throw new Error(`Invalid pages_branch: "${config.pages_branch}"`);
@@ -125,6 +132,10 @@ export function validateConfig(config, { allowedPackageManagers = ALLOWED_PACKAG
     if (config[field] !== undefined && typeof config[field] !== 'string') {
       throw new Error(`Config ${field} must be a string`);
     }
+  }
+  if (config.cname !== undefined) normalizeCname(config.cname);
+  if (config.preserve_cname !== undefined && typeof config.preserve_cname !== 'boolean') {
+    throw new Error('Config preserve_cname must be a boolean');
   }
   if (config.create_deployment !== undefined && typeof config.create_deployment !== 'boolean') {
     throw new Error('Config create_deployment must be a boolean');
@@ -238,6 +249,16 @@ export function validateConfig(config, { allowedPackageManagers = ALLOWED_PACKAG
     }
   }
 
+  if (config.audit_bundle_size !== undefined && typeof config.audit_bundle_size !== 'boolean') {
+    throw new Error('Config audit_bundle_size must be a boolean');
+  }
+  if (config.bundle_size_max_mb !== undefined && config.bundle_size_max_mb !== '') {
+    const mb = Number(config.bundle_size_max_mb);
+    if (!Number.isFinite(mb) || mb <= 0) {
+      throw new Error('Config bundle_size_max_mb must be a positive number');
+    }
+  }
+
   if (config.build !== undefined && config.build !== null) {
     if (typeof config.build !== 'object') {
       throw new Error('Config "build" must be an object');
@@ -255,6 +276,10 @@ export function validateConfig(config, { allowedPackageManagers = ALLOWED_PACKAG
   }
 
   return true;
+}
+
+function rejectUnsafeYamlKey(key) {
+  throw new Error(`Configuration key "${key}" is not allowed`);
 }
 
 export function parseSimpleYaml(content) {
@@ -303,6 +328,8 @@ export function parseSimpleYaml(content) {
       const colonIdx = trimmed.indexOf(':');
       if (colonIdx !== -1) {
         const key = trimmed.slice(0, colonIdx).trim();
+        // Keys that would write to Object.prototype instead of an own property.
+        if (key === '__proto__' || key === 'constructor' || key === 'prototype') rejectUnsafeYamlKey(key);
         let val = trimmed.slice(colonIdx + 1).trim();
         if (val === '|' || val === '>' || /^([|>])([+-]?)$/.test(val)) {
           const { value, nextIndex } = parseBlockScalar(index, { allowNested: false });
@@ -321,6 +348,8 @@ export function parseSimpleYaml(content) {
       const colonIdx = trimmed.indexOf(':');
       if (colonIdx !== -1) {
         const key = trimmed.slice(0, colonIdx).trim();
+        // Keys that would write to Object.prototype instead of an own property.
+        if (key === '__proto__' || key === 'constructor' || key === 'prototype') rejectUnsafeYamlKey(key);
         let val = trimmed.slice(colonIdx + 1).trim();
         if (val === '|' || val === '>' || /^([|>])([+-]?)$/.test(val)) {
           const { value, nextIndex } = parseBlockScalar(index, { allowNested: true });
@@ -390,6 +419,13 @@ export function resolveConfiguration({
           : DEFAULT_CONFIG.create_deployment,
     site_url: inputs.site_url || fileConfig?.site_url || DEFAULT_CONFIG.site_url,
     base_path: inputs.base_path || fileConfig?.base_path || DEFAULT_CONFIG.base_path,
+    cname: normalizeCname(inputs.cname || fileConfig?.cname || DEFAULT_CONFIG.cname),
+    preserve_cname:
+      inputs.preserve_cname !== undefined && inputs.preserve_cname !== ''
+        ? String(inputs.preserve_cname) === 'true'
+        : fileConfig?.preserve_cname !== undefined
+          ? Boolean(fileConfig.preserve_cname)
+          : DEFAULT_CONFIG.preserve_cname,
     artifact_name: inputs.artifact_name || fileConfig?.artifact_name || DEFAULT_CONFIG.artifact_name,
     managed_directories:
       inputs.managed_directories || fileConfig?.managed_directories || DEFAULT_CONFIG.managed_directories,
@@ -482,6 +518,18 @@ export function resolveConfiguration({
         : fileConfig?.auto_base_url !== undefined
           ? Boolean(fileConfig.auto_base_url)
           : DEFAULT_CONFIG.auto_base_url,
+    audit_bundle_size:
+      inputs.audit_bundle_size !== undefined && inputs.audit_bundle_size !== ''
+        ? String(inputs.audit_bundle_size) === 'true'
+        : fileConfig?.audit_bundle_size !== undefined
+          ? Boolean(fileConfig.audit_bundle_size)
+          : DEFAULT_CONFIG.audit_bundle_size,
+    bundle_size_max_mb:
+      inputs.bundle_size_max_mb !== undefined && inputs.bundle_size_max_mb !== ''
+        ? String(inputs.bundle_size_max_mb)
+        : fileConfig?.bundle_size_max_mb !== undefined && fileConfig.bundle_size_max_mb !== ''
+          ? String(fileConfig.bundle_size_max_mb)
+          : DEFAULT_CONFIG.bundle_size_max_mb,
     build: {
       install_command:
         inputs.install_command ||
@@ -500,6 +548,16 @@ export function resolveConfiguration({
   return merged;
 }
 
+// Linear-time equivalent of `.replace(/^\/+|\/+$/g, '')`, which is
+// polynomial on long runs of slashes.
+function trimSlashes(value) {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === '/') start += 1;
+  while (end > start && value[end - 1] === '/') end -= 1;
+  return value.slice(start, end);
+}
+
 export function resolveBaseDirectoryForRef(
   baseRef,
   { target_directory = '', environment = '', default_branch = '', ref_to_directory = {} } = {}
@@ -515,10 +573,8 @@ export function resolveBaseDirectoryForRef(
   }
 
   const normalizedBaseRef = String(baseRef).trim();
-  const cleanBaseRef = normalizedBaseRef
-    .replace(/^refs\/heads\//, '')
-    .replace(/\\/g, '/')
-    .replace(/^\/+|\/+$/g, '');
+  const slashBaseRef = normalizedBaseRef.replace(/^refs\/heads\//, '').replace(/\\/g, '/');
+  const cleanBaseRef = trimSlashes(slashBaseRef);
 
   const refKey = normalizedBaseRef.replace(/\\/g, '/');
   const mapped =

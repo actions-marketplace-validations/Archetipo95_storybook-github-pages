@@ -1,11 +1,22 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { resolveDeploymentTarget, validateConfig, validateRelativeDirectory } from './config.js';
+import { CNAME_FILE, normalizeCname, readCnameFile, writeCnameFile } from './cname.js';
 import { requestPagesRebuild, withSerializedBranchWrite, WRITE_LOCK_NAME } from './git-branch-writer.js';
 
-export async function replaceDirectory(repo, targetDirectory, sourceDirectory, managedDirectories = []) {
+export async function replaceDirectory(
+  repo,
+  targetDirectory,
+  sourceDirectory,
+  managedDirectories = [],
+  { cname = '', preserveCname = true } = {}
+) {
   validateRelativeDirectory(targetDirectory, 'target_directory', { allowEmpty: true });
+  const hostname = normalizeCname(cname);
   if (!targetDirectory) {
+    // Keep the branch's existing custom domain when the new build does not ship one,
+    // otherwise a root replacement would drop it and GitHub Pages would reset the domain.
+    const existingCname = preserveCname ? await readCnameFile(repo) : null;
     const staging = `${repo}.staging-${process.pid}`;
     await fs.rm(staging, { recursive: true, force: true });
     await fs.cp(sourceDirectory, staging, { recursive: true, preserveTimestamps: true });
@@ -17,6 +28,11 @@ export async function replaceDirectory(repo, targetDirectory, sourceDirectory, m
       await fs.rename(path.join(staging, entry), path.join(repo, entry));
     }
     await fs.rm(staging, { recursive: true, force: true });
+    if (hostname) {
+      await writeCnameFile(repo, hostname);
+    } else if (existingCname !== null && (await readCnameFile(repo)) === null) {
+      await fs.writeFile(path.join(repo, CNAME_FILE), existingCname, 'utf8');
+    }
     // Ensure .nojekyll exists at root so GitHub Pages doesn't ignore underscore files (_plugin-vue...)
     await fs.writeFile(path.join(repo, '.nojekyll'), '', 'utf8');
     return;
@@ -28,6 +44,9 @@ export async function replaceDirectory(repo, targetDirectory, sourceDirectory, m
   } catch {
     await fs.writeFile(rootNoJekyll, '', 'utf8');
   }
+  // The custom domain is site-wide, so it always lives at the branch root; subdirectory
+  // publishes never touch an existing root CNAME.
+  await writeCnameFile(repo, hostname);
   const target = path.join(repo, targetDirectory);
   const staging = `${target}.staging-${process.pid}`;
   const backup = `${target}.previous-${process.pid}`;
@@ -60,6 +79,8 @@ export async function publishDirectory({
   managedDirectories = [],
   siteUrl = '',
   basePath = '',
+  cname = '',
+  preserveCname = true,
   triggerPagesRebuild = false,
   token,
   repository
@@ -70,14 +91,16 @@ export async function publishDirectory({
     target_directory: targetDirectory,
     managed_directories: managedDirectories,
     site_url: siteUrl,
-    base_path: basePath
+    base_path: basePath,
+    cname,
+    preserve_cname: preserveCname
   });
   const writeResult = await withSerializedBranchWrite({
     repo,
     branch,
     commitMessage: `Deploy Storybook${targetDirectory ? ` to ${targetDirectory}` : ''}`,
     mutate: async repoPath => {
-      await replaceDirectory(repoPath, targetDirectory, source, managedDirectories);
+      await replaceDirectory(repoPath, targetDirectory, source, managedDirectories, { cname, preserveCname });
       return true;
     }
   });
@@ -116,6 +139,8 @@ if (process.argv[1]?.endsWith('publish-directory.js')) {
     targetDirectory: process.env.TARGET_DIRECTORY || '',
     siteUrl: process.env.SITE_URL || '',
     basePath: process.env.BASE_PATH || '',
+    cname: process.env.CNAME || '',
+    preserveCname: process.env.PRESERVE_CNAME !== 'false',
     triggerPagesRebuild: process.env.TRIGGER_PAGES_REBUILD === 'true',
     managedDirectories: process.env.MANAGED_DIRECTORIES
       ? process.env.MANAGED_DIRECTORIES.split(',')

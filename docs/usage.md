@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   deploy-storybook:
-    uses: Archetipo95/storybook-github-pages/.github/workflows/deploy-storybook.yml@v1.9.14
+    uses: Archetipo95/storybook-github-pages/.github/workflows/deploy-storybook.yml@v1.11.0
     with:
       path: 'storybook-static'
       package_manager: 'npm'
@@ -53,7 +53,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Build and Deploy Storybook
-        uses: Archetipo95/storybook-github-pages@v1.9.14
+        uses: Archetipo95/storybook-github-pages@v1.11.0
         with:
           path: 'storybook-static'
           build_command: 'npm run build-storybook'
@@ -74,6 +74,7 @@ on:
 concurrency:
   group: storybook-pages-${{ github.repository }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   build:
@@ -88,7 +89,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Install dependencies and build
         run: |
@@ -123,7 +124,7 @@ jobs:
           fetch-depth: 0
 
       - name: Publish directory
-        uses: Archetipo95/storybook-github-pages/publisher@v1.9.14
+        uses: Archetipo95/storybook-github-pages/publisher@v1.11.0
         with:
           pages_repo: ${{ github.workspace }}/pages-repo
           source_directory: ${{ github.workspace }}/storybook-static
@@ -140,10 +141,10 @@ jobs:
 | Category             | Supported Environments                                                                   | Notes                                                                                                             |
 | -------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | **Platform**         | GitHub.com (Public & Private Repositories)                                               | Uses native GitHub Pages API & OIDC JWTs                                                                          |
-| **Runner OS**        | GitHub-hosted Linux (`ubuntu-latest`)                                                    | Tested on `ubuntu-latest` with Node.js 20+                                                                        |
-| **Node.js Runtime**  | Node.js 20+                                                                              | Zero external npm dependencies (uses native Node.js ES modules)                                                   |
+| **Runner OS**        | GitHub-hosted Linux (`ubuntu-latest`)                                                    | Tested on `ubuntu-latest` with Node.js 24+                                                                        |
+| **Node.js Runtime**  | Node.js 24+                                                                              | Zero external npm dependencies (uses native Node.js ES modules)                                                   |
 | **Package Managers** | Reusable workflow: `npm`, `yarn`, `pnpm`, `bun`; composite action: `npm`, `yarn`, `pnpm` | Bun is provisioned only in the reusable workflow's read-only build job                                            |
-| **Tagging Strategy** | Immutable release tags (for example, `@v1.9.14`)                                         | **Recommended for stable, reproducible use.** Floating major tags (e.g. `@v1`) are optional and non-reproducible. |
+| **Tagging Strategy** | Immutable release tags (for example, `@v1.11.0`)                                         | **Recommended for stable, reproducible use.** Floating major tags (e.g. `@v1`) are optional and non-reproducible. |
 
 ---
 
@@ -170,6 +171,8 @@ jobs:
 | `target_directory`            | `string`  | `''`                 | Relative directory to replace; empty means the production root                                                                            |
 | `site_url`                    | `string`  | `''`                 | Canonical site URL used for deployment metadata                                                                                           |
 | `base_path`                   | `string`  | `''`                 | URL base path; derived from `target_directory` when empty                                                                                 |
+| `cname`                       | `string`  | `''`                 | Reusable workflow, directory mode: custom domain written as a single-line `CNAME` at the Pages branch root; ignored in artifact mode      |
+| `preserve_cname`              | `boolean` | `true`               | Reusable workflow, directory mode: keep the existing root `CNAME` when a root publish does not provide one                                |
 | `trigger_pages_rebuild`       | `boolean` | `false`              | Whether to explicitly request a Pages rebuild after a directory publish; normally unnecessary for branch-based Pages                      |
 | `preview_root`                | `string`  | `pr-preview`         | Root directory (on the Pages branch) under which PR previews are published, as `<preview_root>/pr-<number>`                               |
 | `preview_retention_days`      | `number`  | `30`                 | Days an _open_ PR's preview may remain before the janitor prunes it; closed-PR previews are always eligible for removal regardless of age |
@@ -187,6 +190,8 @@ jobs:
 | `smoke_test_stories`          | `string`  | `all`                | Comma-separated story id globs to exercise after the manager and canvas checks                                                            |
 | `smoke_test_timeout_ms`       | `number`  | `30000`              | Per-page browser navigation timeout in milliseconds                                                                                       |
 | `auto_base_url`               | `boolean` | `true`               | Automatically inject the repository or preview base URL into Storybook builds unless an explicit base option is provided                  |
+| `audit_bundle_size`           | `boolean` | `false`              | Report total, gzip-estimated and per-type asset sizes in the job summary ([Bundle size](bundle-size.md))                                  |
+| `bundle_size_max_mb`          | `string`  | `''`                 | Optional total static output budget in megabytes; the build fails when exceeded                                                           |
 
 When `smoke_test` is enabled, the action serves the static output only on
 `127.0.0.1`, opens the manager and canvas with Playwright, and fails on
@@ -239,8 +244,19 @@ build:
 
 ### Trusted directory mode
 
-Set `mode: directory` to publish to a shared Pages branch. The build job remains untrusted (`contents: read`) and transfers its validated output to a separate publisher job with `contents: write`. Writes are serialized per repository and branch, conflicts receive bounded fetch/rebase retries, and the configured target is staged and replaced atomically. GitHub Pages normally rebuilds automatically after a branch push; set `trigger_pages_rebuild: 'true'` only when an explicit rebuild request is needed for a non-standard Pages configuration.
+Set `mode: directory` to publish to a shared Pages branch. The build job remains untrusted (`contents: read`) and transfers its validated output to a separate publisher job with `contents: write`. Writes are serialized by the `storybook-pages-<owner>/<repo>` concurrency group with `queue: max`: up to 100 runs wait instead of replacing each other and run first in, first out by when each run started waiting (not by when it was triggered; GitHub notes that ordering is not guaranteed; see [PR previews → Concurrency](pr-previews.md#concurrency)). A rejected push is retried on the fresh branch tip, and the configured target is staged and replaced atomically. GitHub Pages normally rebuilds automatically after a branch push; set `trigger_pages_rebuild: 'true'` only when an explicit rebuild request is needed for a non-standard Pages configuration.
 
 Use an empty `target_directory` for the production root and a name such as `staging` for a named environment; both can coexist. Targets must be relative and cannot traverse or address `.git` or `.github`. Unrelated directories are preserved. GitHub Pages has one site/custom-domain configuration, so named environments are URL subpaths (for example `/staging`) and publication is eventually visible after the rebuild.
+
+### Custom domains (`CNAME`)
+
+How GitHub Pages picks up a custom domain depends on the publishing source:
+
+- **Artifact mode** (`actions/deploy-pages`): GitHub ignores `CNAME` files in the deployed artifact. Configure the domain in repository **Settings → Pages → Custom domain**. Setting `cname` in artifact mode only emits a warning.
+- **Directory mode** (branch-backed): GitHub reads the domain from the `CNAME` file at the root of the Pages branch, so that file must survive every publish.
+
+In directory mode, an existing root `CNAME` is kept when a root publish replaces the branch contents and neither `cname` nor the build output provides one, so the custom domain is not reset and certificate renewal keeps working. Subdirectory publishes (named environments, PR previews) never touch the root `CNAME`. Set `preserve_cname: false` to let a root publish remove it.
+
+Set `cname: storybook.example.com` to have the publisher write the file for you. The value must be a bare hostname: schemes (`https://`), ports, paths, and trailing slashes are rejected. Precedence on a root publish is: `cname` input, then a `CNAME` shipped in the build output (for example from `.storybook/public`), then the preserved branch file.
 
 ---

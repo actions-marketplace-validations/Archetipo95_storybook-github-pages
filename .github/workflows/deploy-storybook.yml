@@ -83,6 +83,16 @@ on:
         required: false
         type: string
         default: ''
+      cname:
+        description: 'Directory mode: custom domain written to a CNAME file at the Pages branch root (for example, storybook.example.com). Ignored in artifact mode; configure the domain in repository Settings > Pages'
+        required: false
+        type: string
+        default: ''
+      preserve_cname:
+        description: 'Directory mode: whether to keep the existing root CNAME when a root publish does not provide one'
+        required: false
+        type: boolean
+        default: true
       auto_base_url:
         description: 'Whether to compute and inject the Storybook base URL for the deployment target'
         required: false
@@ -133,6 +143,16 @@ on:
         required: false
         type: number
         default: 30000
+      audit_bundle_size:
+        description: 'Whether to audit static asset sizes and append a bundle size scorecard to the job summary'
+        required: false
+        type: boolean
+        default: false
+      bundle_size_max_mb:
+        description: 'Optional total static output budget in megabytes; the build fails when the audit exceeds it'
+        required: false
+        type: string
+        default: ''
     secrets:
       passcode_hash:
         description: 'SHA-256 hash of the Storybook passcode'
@@ -151,6 +171,7 @@ on:
 concurrency:
   group: storybook-pages-${{ github.repository }}
   cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: read
@@ -172,6 +193,8 @@ jobs:
       site_url: ${{ steps.config.outputs.site_url }}
       base_path: ${{ steps.config.outputs.base_path }}
       auto_base_url: ${{ steps.config.outputs.auto_base_url }}
+      cname: ${{ steps.config.outputs.cname }}
+      preserve_cname: ${{ steps.config.outputs.preserve_cname }}
       managed_directories: ${{ steps.config.outputs.managed_directories }}
       artifact_name: ${{ steps.config.outputs.artifact_name }}
       generate_badges: ${{ steps.config.outputs.generate_badges }}
@@ -209,7 +232,7 @@ jobs:
         if: ${{ steps.config.outputs.package_manager == 'npm' || steps.config.outputs.package_manager == 'yarn' || steps.config.outputs.package_manager == 'pnpm' }}
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '20'
+          node-version: '24'
           cache: ${{ inputs.cache && steps.config.outputs.package_manager || '' }}
 
       - name: Set up Bun
@@ -218,7 +241,7 @@ jobs:
 
       - name: Restore Bun dependency cache
         if: ${{ inputs.cache && steps.config.outputs.package_manager == 'bun' }}
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-${{ inputs.cache_key_prefix }}-bun-${{ hashFiles('**/bun.lock', '**/bun.lockb') }}
@@ -227,7 +250,7 @@ jobs:
 
       - name: Restore Storybook compilation cache
         if: ${{ inputs.cache }}
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             node_modules/.cache/storybook
@@ -260,6 +283,16 @@ jobs:
           fi
           eval "$CMD"
 
+      # The audit runs before badges/stats are written so it measures the
+      # Storybook build output only.
+      - name: Audit Storybook bundle size
+        if: ${{ steps.config.outputs.audit_bundle_size == 'true' }}
+        env:
+          TARGET_PATH: ${{ steps.config.outputs.path }}
+          SB_BUNDLE_SIZE_MAX_MB: ${{ steps.config.outputs.bundle_size_max_mb }}
+          WORKSPACE_ROOT: ${{ github.workspace }}
+        run: node src/audit-static.js "$TARGET_PATH" "$WORKSPACE_ROOT"
+
       - name: Generate Storybook badges
         if: ${{ steps.config.outputs.generate_badges == 'true' }}
         run: |
@@ -286,7 +319,12 @@ jobs:
 
       - name: Run Storybook smoke test
         if: ${{ steps.config.outputs.smoke_test == 'true' }}
-        run: node src/smoke-test.js "${{ steps.config.outputs.path }}" "${{ github.workspace }}" "${{ steps.config.outputs.smoke_test_stories }}" "${{ steps.config.outputs.smoke_test_timeout_ms }}"
+        env:
+          TARGET_PATH: ${{ steps.config.outputs.path }}
+          WORKSPACE_ROOT: ${{ github.workspace }}
+          SMOKE_TEST_STORIES: ${{ steps.config.outputs.smoke_test_stories }}
+          SMOKE_TEST_TIMEOUT_MS: ${{ steps.config.outputs.smoke_test_timeout_ms }}
+        run: node src/smoke-test.js "$TARGET_PATH" "$WORKSPACE_ROOT" "$SMOKE_TEST_STORIES" "$SMOKE_TEST_TIMEOUT_MS"
 
       - name: Validate static artifact
         run: |
@@ -309,10 +347,16 @@ jobs:
         run: node src/inject-auth-gate.js "$TARGET_PATH"
 
       - name: Ensure .nojekyll exists
+        env:
+          TARGET_PATH: ${{ steps.config.outputs.path }}
         run: |
-          if [ -d "${{ steps.config.outputs.path }}" ]; then
-            touch "${{ steps.config.outputs.path }}/.nojekyll"
+          if [ -d "$TARGET_PATH" ]; then
+            touch "$TARGET_PATH/.nojekyll"
           fi
+
+      - name: Warn about ignored custom domain
+        if: ${{ steps.config.outputs.cname != '' && steps.config.outputs.mode == 'artifact' }}
+        run: echo '::warning title=cname ignored in artifact mode::GitHub Pages ignores CNAME files for GitHub Actions (artifact) deployments. Configure the custom domain in repository Settings > Pages instead.'
 
       - name: Upload Pages artifact
         if: ${{ steps.config.outputs.mode == 'artifact' }}
@@ -435,7 +479,7 @@ jobs:
           BASE_PATH: ${{ needs.build-and-upload.outputs.base_path }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        uses: Archetipo95/storybook-github-pages/publisher@1a922a815952feaeb895f65b7f5dbf673c2fd204
+        uses: Archetipo95/storybook-github-pages/publisher@227fd45a195eb7110996f3843277a97b5820b489
         with:
           pages_repo: ${{ github.workspace }}/pages-repo
           source_directory: ${{ github.workspace }}/storybook-static
@@ -444,3 +488,5 @@ jobs:
           managed_directories: ${{ needs.build-and-upload.outputs.managed_directories }}
           site_url: ${{ needs.build-and-upload.outputs.site_url }}
           base_path: ${{ needs.build-and-upload.outputs.base_path }}
+          cname: ${{ needs.build-and-upload.outputs.cname }}
+          preserve_cname: ${{ needs.build-and-upload.outputs.preserve_cname }}

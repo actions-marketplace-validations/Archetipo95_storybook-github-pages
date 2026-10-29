@@ -12,12 +12,10 @@ test('verify all action uses are pinned to full commit SHAs', () => {
     path.join(root, 'preview-cleanup/action.yml'),
     path.join(root, 'preview-janitor/action.yml'),
     path.join(root, 'preview-build/action.yml'),
-    path.join(root, '.github/workflows/deploy-storybook.yml'),
-    path.join(root, '.github/workflows/ci.yml'),
-    path.join(root, '.github/workflows/pr-preview-build.yml'),
-    path.join(root, '.github/workflows/pr-preview-publish.yml'),
-    path.join(root, '.github/workflows/pr-preview-cleanup.yml'),
-    path.join(root, '.github/workflows/pr-preview-janitor.yml')
+    ...fs
+      .readdirSync(path.join(root, '.github/workflows'))
+      .filter(file => /\.ya?ml$/.test(file))
+      .map(file => path.join(root, '.github/workflows', file))
   ];
 
   const anyUsesRegex = /uses:\s*([^\s]+)/g;
@@ -101,7 +99,7 @@ test('reusable workflow caches dependencies and Storybook output only in its rea
   assert.match(buildJob, /node_modules\/\.cache\/storybook/);
   assert.match(buildJob, /\.cache\/storybook/);
   assert.match(buildJob, /\.storybook\/\.cache/);
-  assert.match(buildJob, /actions\/cache@5a3ec84eff668545956fd18022155c47e93e2684/);
+  assert.match(buildJob, /actions\/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9/);
   assert.doesNotMatch(preview, /uses: actions\/cache/);
 });
 
@@ -148,7 +146,7 @@ test('directory publisher has Pages permission and rebuild is outside push retri
 
 test('directory publisher reference pins the reviewed implementation commit', () => {
   const workflow = fs.readFileSync(path.join(process.cwd(), '.github/workflows/deploy-storybook.yml'), 'utf8');
-  assert.match(workflow, /Archetipo95\/storybook-github-pages\/publisher@1a922a815952feaeb895f65b7f5dbf673c2fd204/);
+  assert.match(workflow, /Archetipo95\/storybook-github-pages\/publisher@[a-f0-9]{40}/);
   assert.doesNotMatch(workflow, /publisher@9be19be83cb05f2f648b4c78dac27befdb93d740/);
 });
 

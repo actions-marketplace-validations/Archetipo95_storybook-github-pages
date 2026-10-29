@@ -9,7 +9,8 @@ import {
   parseSimpleYaml,
   resolveConfiguration,
   resolveDeploymentTarget,
-  resolveBaseDirectoryForRef
+  resolveBaseDirectoryForRef,
+  validateRelativeDirectory
 } from '../src/config.js';
 import { augmentBuildCommand, computeBaseUrl, hasExplicitBaseUrl } from '../src/base-url.js';
 
@@ -458,4 +459,79 @@ test('resolveConfiguration - defaults generate_stats_graph and stats_directory, 
   assert.equal(fromInput.stats_directory, 'doc-stats');
 
   fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+test('validateConfig - validates audit settings', () => {
+  assert.equal(
+    validateConfig({
+      audit_bundle_size: true,
+      bundle_size_max_mb: '12.5'
+    }),
+    true
+  );
+  assert.throws(() => validateConfig({ audit_bundle_size: 'yes' }), /audit_bundle_size must be a boolean/);
+  assert.throws(() => validateConfig({ bundle_size_max_mb: '-1' }), /bundle_size_max_mb must be a positive number/);
+});
+
+test('resolveConfiguration - audits are off by default and honor input and file overrides', () => {
+  const missing = path.join(os.tmpdir(), 'missing-audit-config.yml');
+  const defaults = resolveConfiguration({ inputs: {}, configFilePath: missing });
+  assert.equal(defaults.audit_bundle_size, false);
+  assert.equal(defaults.bundle_size_max_mb, '');
+
+  const fromInputs = resolveConfiguration({
+    inputs: { audit_bundle_size: true, bundle_size_max_mb: '20' },
+    configFilePath: missing
+  });
+  assert.equal(fromInputs.audit_bundle_size, true);
+  assert.equal(fromInputs.bundle_size_max_mb, '20');
+
+  const configFilePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'audit-config-')), '.storybook-pages.yml');
+  fs.writeFileSync(configFilePath, 'audit_bundle_size: true\nbundle_size_max_mb: 8\n');
+  const fromFile = resolveConfiguration({ inputs: { audit_bundle_size: '' }, configFilePath });
+  assert.equal(fromFile.audit_bundle_size, true);
+  assert.equal(fromFile.bundle_size_max_mb, '8');
+});
+
+test('validateRelativeDirectory rejects paths that normalize to the parent directory', () => {
+  for (const value of ['..', 'a/..', 'a/../..', 'feature/../..', 'a\\..\\..', 'a/b/../../..', './..']) {
+    assert.throws(() => validateRelativeDirectory(value, 'field', { allowEmpty: true }), /unsafe/, value);
+  }
+  assert.equal(validateRelativeDirectory('feature/../release'), true, 'paths that stay inside remain valid');
+});
+
+test('resolveBaseDirectoryForRef never maps a base ref outside the Pages branch', () => {
+  for (const ref of ['feature/../..', 'refs/heads/a/../..', 'a/b/../../../x', '.github', 'refs/heads/.git']) {
+    assert.throws(() => resolveBaseDirectoryForRef(ref, { default_branch: 'main' }), /unsafe/, ref);
+  }
+  assert.throws(
+    () => resolveBaseDirectoryForRef('develop', { ref_to_directory: { develop: 'x/../..' } }),
+    /ref_to_directory/
+  );
+});
+
+test('parseSimpleYaml rejects keys that would pollute Object.prototype', () => {
+  for (const content of [
+    '__proto__:\n  polluted: true\n',
+    'build:\n  __proto__: x\n',
+    'constructor: x\n',
+    'build:\n  prototype: x\n'
+  ]) {
+    assert.throws(() => parseSimpleYaml(content), /is not allowed/, content);
+  }
+  assert.equal({}.polluted, undefined);
+});
+
+test('validateConfig rejects a pages_branch that git would read as an option', () => {
+  assert.throws(() => validateConfig({ pages_branch: '--upload-pack=x' }), /Invalid pages_branch/);
+  assert.throws(() => validateConfig({ pages_branch: '-b' }), /Invalid pages_branch/);
+});
+
+test('resolveBaseDirectoryForRef trims long slash runs in linear time', () => {
+  const ref = `${'/'.repeat(50000)}feature${'/'.repeat(50000)}x`;
+  const started = Date.now();
+  assert.throws(() => resolveBaseDirectoryForRef(`${'/'.repeat(50000)}x/..${'/'.repeat(50000)}`), /unsafe/);
+  assert.equal(resolveBaseDirectoryForRef(`//feature/x//`, { default_branch: 'main' }), 'feature/x');
+  resolveBaseDirectoryForRef(ref, { default_branch: 'main' });
+  assert.ok(Date.now() - started < 1000, 'slash trimming must not be quadratic');
 });

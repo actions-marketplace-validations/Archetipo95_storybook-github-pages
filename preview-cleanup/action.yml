@@ -28,4 +28,4 @@ runs:
         PR_NUMBER: ${{ inputs.pr_number }}
         GITHUB_TOKEN: ${{ github.token }}
         GITHUB_REPOSITORY: ${{ github.repository }}
-      run: node "${{ github.action_path }}/../src/preview-cleanup.js"
+      run: node "$GITHUB_ACTION_PATH/../src/preview-cleanup.js"

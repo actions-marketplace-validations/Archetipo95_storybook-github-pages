@@ -33,4 +33,4 @@ runs:
         WARNING_DAYS_BEFORE_CLEANUP: ${{ inputs.warning_days_before_cleanup }}
         GITHUB_TOKEN: ${{ github.token }}
         GITHUB_REPOSITORY: ${{ github.repository }}
-      run: node "${{ github.action_path }}/../src/preview-janitor.js"
+      run: node "$GITHUB_ACTION_PATH/../src/preview-janitor.js"

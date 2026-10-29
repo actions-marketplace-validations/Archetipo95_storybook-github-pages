@@ -135,6 +135,14 @@ inputs:
     description: 'Whether to compute and inject the Storybook base URL for the deployment target'
     required: false
     default: 'true'
+  audit_bundle_size:
+    description: 'Whether to audit static asset sizes and append a bundle size scorecard to the job summary'
+    required: false
+    default: 'false'
+  bundle_size_max_mb:
+    description: 'Optional total static output budget in megabytes; the job fails when the audit exceeds it'
+    required: false
+    default: ''
 
 outputs:
   page_url:
@@ -161,7 +169,7 @@ runs:
         PUBLISH_INPUT: ${{ inputs.publish }}
         ARTIFACT_NAME_INPUT: ${{ inputs.artifact_name }}
       run: |
-        node -e 'import("${{ github.action_path }}/src/config.js").then(async ({resolveConfiguration, COMPOSITE_PACKAGE_MANAGERS}) => {
+        node -e 'import(process.env.GITHUB_ACTION_PATH + "/src/config.js").then(async ({resolveConfiguration, COMPOSITE_PACKAGE_MANAGERS}) => {
           const c = resolveConfiguration({inputs: JSON.parse(process.env.CONFIG_INPUTS), allowedPackageManagers: COMPOSITE_PACKAGE_MANAGERS});
           const lines = [
             `SB_MODE=${c.mode}`, `SB_PATH=${c.path}`, `SB_PACKAGE_MANAGER=${c.package_manager}`,
@@ -177,7 +185,9 @@ runs:
             `SB_GENERATE_STATS_GRAPH=${c.generate_stats_graph}`, `SB_STATS_DIRECTORY=${c.stats_directory || "stats"}`,
             `SB_ENABLE_PASSCODE_GATE=${c.enable_passcode_gate}`, `SB_PASSCODE_SESSION_HOURS=${c.passcode_session_hours}`,
             `SB_SMOKE_TEST=${c.smoke_test}`, `SB_SMOKE_TEST_STORIES=${c.smoke_test_stories}`, `SB_SMOKE_TEST_TIMEOUT_MS=${c.smoke_test_timeout_ms}`,
-            `SB_SITE_URL=${c.site_url || ""}`, `SB_BASE_PATH=${c.base_path || ""}`, `SB_AUTO_BASE_URL=${c.auto_base_url}`
+            `SB_SITE_URL=${c.site_url || ""}`, `SB_BASE_PATH=${c.base_path || ""}`, `SB_AUTO_BASE_URL=${c.auto_base_url}`,
+            `SB_AUDIT_BUNDLE_SIZE=${c.audit_bundle_size}`, `SB_BUNDLE_SIZE_MAX_MB=${c.bundle_size_max_mb}`,
+            `SB_CNAME=${c.cname || ""}`
           ];
           const {appendFileSync} = await import("node:fs");
           appendFileSync(process.env.GITHUB_ENV, `${lines.join("\n")}\n`);
@@ -187,13 +197,15 @@ runs:
       if: ${{ env.SB_PACKAGE_MANAGER == 'npm' || env.SB_PACKAGE_MANAGER == 'yarn' || env.SB_PACKAGE_MANAGER == 'pnpm' }}
       uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
-        node-version: '20'
+        node-version: '24'
 
     - name: Install dependencies
       if: ${{ env.SB_INSTALL_COMMAND != '' }}
       shell: bash
+      env:
+        SB_INSTALL_COMMAND: ${{ env.SB_INSTALL_COMMAND }}
       run: |
-        CMD="${{ env.SB_INSTALL_COMMAND }}"
+        CMD="$SB_INSTALL_COMMAND"
         echo "Running custom install command: $CMD"
         eval "$CMD"
 
@@ -211,10 +223,21 @@ runs:
       run: |
         CMD="$SB_BUILD_COMMAND"
         if [ "$SB_AUTO_BASE_URL" = "true" ]; then
-          eval "$(node -e 'import("${{ github.action_path }}/src/base-url.js").then(({computeBaseUrl, augmentBuildCommand, buildEnvironment}) => { const baseUrl = computeBaseUrl({repository: process.env.SB_REPOSITORY, siteUrl: process.env.SB_SITE_URL, basePath: process.env.SB_BASE_PATH, eventName: process.env.SB_EVENT_NAME, prNumber: process.env.SB_PR_NUMBER}); const command = augmentBuildCommand(process.env.SB_BUILD_COMMAND, baseUrl); console.log(`CMD=${JSON.stringify(command)}`); for (const [key, value] of Object.entries(buildEnvironment(baseUrl))) console.log(`export ${key}=${JSON.stringify(value)}`); })')"
+          eval "$(node -e 'import(process.env.GITHUB_ACTION_PATH + "/src/base-url.js").then(({computeBaseUrl, augmentBuildCommand, buildEnvironment}) => { const baseUrl = computeBaseUrl({repository: process.env.SB_REPOSITORY, siteUrl: process.env.SB_SITE_URL, basePath: process.env.SB_BASE_PATH, eventName: process.env.SB_EVENT_NAME, prNumber: process.env.SB_PR_NUMBER}); const command = augmentBuildCommand(process.env.SB_BUILD_COMMAND, baseUrl); console.log(`CMD=${JSON.stringify(command)}`); for (const [key, value] of Object.entries(buildEnvironment(baseUrl))) console.log(`export ${key}=${JSON.stringify(value)}`); })')"
         fi
         echo "Running custom build command: $CMD"
         eval "$CMD"
+
+    # The audit runs before badges/stats are written so it measures the
+    # Storybook build output only.
+    - name: Audit Storybook bundle size
+      if: ${{ env.SB_AUDIT_BUNDLE_SIZE == 'true' }}
+      shell: bash
+      env:
+        SB_PATH: ${{ env.SB_PATH }}
+        SB_BUNDLE_SIZE_MAX_MB: ${{ env.SB_BUNDLE_SIZE_MAX_MB }}
+        WORKSPACE_ROOT: ${{ github.workspace }}
+      run: node "$GITHUB_ACTION_PATH/src/audit-static.js" "$SB_PATH" "$WORKSPACE_ROOT"
 
     - name: Generate Storybook badges
       if: ${{ env.SB_GENERATE_BADGES == 'true' }}
@@ -229,7 +252,7 @@ runs:
         SB_BASE_PATH: ${{ env.SB_BASE_PATH }}
         WORKSPACE_ROOT: ${{ github.workspace }}
         GITHUB_SHA: ${{ github.sha }}
-      run: node "${{ github.action_path }}/src/generate-badges.js" "$SB_PATH" "$WORKSPACE_ROOT"
+      run: node "$GITHUB_ACTION_PATH/src/generate-badges.js" "$SB_PATH" "$WORKSPACE_ROOT"
 
     - name: Generate Storybook growth graph
       if: ${{ env.SB_GENERATE_STATS_GRAPH == 'true' }}
@@ -243,7 +266,7 @@ runs:
         SB_BASE_PATH: ${{ env.SB_BASE_PATH }}
         WORKSPACE_ROOT: ${{ github.workspace }}
         GITHUB_SHA: ${{ github.sha }}
-      run: node "${{ github.action_path }}/src/generate-stats.js" "$SB_PATH" "$WORKSPACE_ROOT"
+      run: node "$GITHUB_ACTION_PATH/src/generate-stats.js" "$SB_PATH" "$WORKSPACE_ROOT"
 
     - name: Run Storybook smoke test
       if: ${{ env.SB_SMOKE_TEST == 'true' }}
@@ -253,14 +276,14 @@ runs:
         WORKSPACE_ROOT: ${{ github.workspace }}
         SB_SMOKE_TEST_STORIES: ${{ env.SB_SMOKE_TEST_STORIES }}
         SB_SMOKE_TEST_TIMEOUT_MS: ${{ env.SB_SMOKE_TEST_TIMEOUT_MS }}
-      run: node "${{ github.action_path }}/src/smoke-test.js" "$SB_PATH" "$WORKSPACE_ROOT" "$SB_SMOKE_TEST_STORIES" "$SB_SMOKE_TEST_TIMEOUT_MS"
+      run: node "$GITHUB_ACTION_PATH/src/smoke-test.js" "$SB_PATH" "$WORKSPACE_ROOT" "$SB_SMOKE_TEST_STORIES" "$SB_SMOKE_TEST_TIMEOUT_MS"
 
     - name: Validate static artifact
       shell: bash
       env:
         SB_PATH: ${{ env.SB_PATH }}
         WORKSPACE_ROOT: ${{ github.workspace }}
-      run: node "${{ github.action_path }}/src/validate-artifact.js" "$SB_PATH" "$WORKSPACE_ROOT"
+      run: node "$GITHUB_ACTION_PATH/src/validate-artifact.js" "$SB_PATH" "$WORKSPACE_ROOT"
 
     - name: Inject Storybook passcode gate
       if: ${{ env.SB_ENABLE_PASSCODE_GATE == 'true' }}
@@ -269,7 +292,7 @@ runs:
         SB_PATH: ${{ env.SB_PATH }}
         PASSCODE_HASH: ${{ inputs.passcode_hash }}
         PASSCODE_SESSION_HOURS: ${{ env.SB_PASSCODE_SESSION_HOURS }}
-      run: node "${{ github.action_path }}/src/inject-auth-gate.js" "$SB_PATH"
+      run: node "$GITHUB_ACTION_PATH/src/inject-auth-gate.js" "$SB_PATH"
 
     - name: Ensure .nojekyll exists
       shell: bash
@@ -279,6 +302,11 @@ runs:
         if [ -d "$SB_PATH" ]; then
           touch "$SB_PATH/.nojekyll"
         fi
+
+    - name: Warn about ignored custom domain
+      if: ${{ env.SB_CNAME != '' && env.SB_MODE == 'artifact' }}
+      shell: bash
+      run: echo '::warning title=cname ignored in artifact mode::GitHub Pages ignores CNAME files for GitHub Actions (artifact) deployments. Configure the custom domain in repository Settings > Pages instead.'
 
     - name: Upload Pages artifact
       if: ${{ env.SB_PUBLISH == 'true' && env.SB_MODE == 'artifact' }}
@@ -300,7 +328,7 @@ runs:
         ENVIRONMENT_URL: ${{ env.SB_ENVIRONMENT_URL }}
         LOG_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         DEPLOYMENT_DESCRIPTION: ${{ env.SB_ENVIRONMENT_NAME || 'github-pages' }} deployment
-      run: node "${{ github.action_path }}/src/github-deployments.js"
+      run: node "$GITHUB_ACTION_PATH/src/github-deployments.js"
 
     - name: Deploy to GitHub Pages
       id: deploy
@@ -321,7 +349,7 @@ runs:
         ENVIRONMENT_URL: ${{ steps.deploy.outputs.page_url || env.SB_ENVIRONMENT_URL }}
         LOG_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         DEPLOYMENT_DESCRIPTION: ${{ env.SB_ENVIRONMENT_NAME || 'github-pages' }} deployment succeeded
-      run: node "${{ github.action_path }}/src/github-deployments.js"
+      run: node "$GITHUB_ACTION_PATH/src/github-deployments.js"
 
     - name: Update GitHub deployment status (failure)
       if: ${{ failure() && env.SB_PUBLISH == 'true' && env.SB_MODE == 'artifact' && env.SB_CREATE_DEPLOYMENT == 'true' && steps.create-deployment.outputs.deployment_id != '' }}
@@ -335,7 +363,7 @@ runs:
         ENVIRONMENT_URL: ${{ env.SB_ENVIRONMENT_URL }}
         LOG_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         DEPLOYMENT_DESCRIPTION: ${{ env.SB_ENVIRONMENT_NAME || 'github-pages' }} deployment failed
-      run: node "${{ github.action_path }}/src/github-deployments.js"
+      run: node "$GITHUB_ACTION_PATH/src/github-deployments.js"
 
     - name: Reject directory mode in composite action
       if: ${{ env.SB_MODE == 'directory' }}

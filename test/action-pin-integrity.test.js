@@ -127,7 +127,7 @@ test('preview-publisher pin resolves alongside the src it depends on', () => {
     gitShowExists(sha, 'preview-publisher/action.yml'),
     `pinned commit ${sha} is missing preview-publisher/action.yml`
   );
-  // preview-publisher/action.yml invokes `${{ github.action_path }}/../src/preview-publish.js`,
+  // preview-publisher/action.yml invokes `$GITHUB_ACTION_PATH/../src/preview-publish.js`,
   // so the pinned commit must also contain the script it depends on.
   assert.ok(
     gitShowExists(sha, 'src/preview-publish.js'),
@@ -226,3 +226,85 @@ test('preview-cleanup pin content includes best-effort optional post-cleanup upd
     `pinned commit ${sha} predates the best-effort preview comment update handling`
   );
 });
+
+/**
+ * Returns the `with:` keys passed to each internal SHA-pinned action step.
+ */
+function internalActionSteps(content) {
+  const lines = content.split('\n');
+  const steps = [];
+  lines.forEach((line, index) => {
+    const match = line.match(/uses: Archetipo95\/storybook-github-pages\/([a-zA-Z0-9_-]+)@([a-f0-9]{40})/);
+    if (!match) return;
+    const stepIndent = line.search(/\S/);
+    const passed = [];
+    let cursor = index + 1;
+    while (cursor < lines.length && !/^\s*with:\s*$/.test(lines[cursor]) && lines[cursor].search(/\S/) >= stepIndent) {
+      cursor += 1;
+    }
+    if (cursor < lines.length && /^\s*with:\s*$/.test(lines[cursor])) {
+      const withIndent = lines[cursor].search(/\S/);
+      for (cursor += 1; cursor < lines.length; cursor += 1) {
+        const current = lines[cursor];
+        if (current.trim() === '') continue;
+        if (current.search(/\S/) <= withIndent) break;
+        const key = current.match(/^\s*([A-Za-z0-9_-]+):/);
+        if (key && current.search(/\S/) === withIndent + 2) passed.push(key[1]);
+      }
+    }
+    steps.push({ subaction: match[1], sha: match[2], passed });
+  });
+  return steps;
+}
+
+function declaredInputs(actionYml) {
+  const inputsBlock = actionYml.split(/^outputs:|^runs:/m)[0];
+  return new Set([...inputsBlock.matchAll(/^ {2}([A-Za-z0-9_-]+):\s*$/gm)].map(match => match[1]));
+}
+
+test('every input passed to an internal pinned action is declared at that pin', () => {
+  let checked = 0;
+  for (const file of filesToScan()) {
+    const relFile = path.relative(repoRoot, file);
+    for (const { subaction, sha, passed } of internalActionSteps(fs.readFileSync(file, 'utf8'))) {
+      if (!gitCommitExists(sha)) continue;
+      const inputs = declaredInputs(
+        execFileSync('git', ['show', `${sha}:${subaction}/action.yml`], { cwd: repoRoot, encoding: 'utf8' })
+      );
+      const missing = passed.filter(name => !inputs.has(name));
+      assert.deepEqual(
+        missing,
+        [],
+        `${relFile}: ${subaction}@${sha} does not accept ${missing.join(', ')}; bump the pin to a commit that does`
+      );
+      checked += 1;
+    }
+  }
+  assert.ok(checked > 0, 'expected at least one internal pinned action step');
+});
+
+// Release gate: the Release Tags workflow sets RELEASE_PIN_CHECK so a tag is
+// only created when every internal pin runs exactly the code being released.
+// Regular PRs cannot satisfy this (a pin cannot reference its own commit), so
+// `npm run prepare-release` moves the pins to the release base commit.
+test(
+  'internal pins run the same action and src code as the release commit',
+  { skip: !process.env.RELEASE_PIN_CHECK },
+  () => {
+    for (const file of filesToScan()) {
+      const relFile = path.relative(repoRoot, file);
+      for (const { subaction, sha } of internalActionSteps(fs.readFileSync(file, 'utf8'))) {
+        const changed = execFileSync('git', ['diff', '--name-only', sha, 'HEAD', '--', `${subaction}/`, 'src/'], {
+          cwd: repoRoot,
+          encoding: 'utf8'
+        }).trim();
+        assert.equal(
+          changed,
+          '',
+          `${relFile}: ${subaction}@${sha} is stale; these files differ from the release commit:\n${changed}\n` +
+            'Run `npm run prepare-release -- <version>` to move internal pins to the release base.'
+        );
+      }
+    }
+  }
+);

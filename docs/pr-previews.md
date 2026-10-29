@@ -4,12 +4,12 @@ Four workflows implement a full pull-request preview lifecycle on top of directo
 
 ### Security model
 
-| Stage                                  | Trigger                                              | Trust level            | What it can do                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| -------------------------------------- | ---------------------------------------------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Build** (`pr-preview-build.yml`)     | `pull_request` (`opened`, `synchronize`, `reopened`) | Untrusted              | `contents: read` only. No secrets, no `pages`/`pull-requests` permission, no cache shared across builds. Builds and validates the PR's actual code (including forks), then uploads a single artifact bundling the static output with signed-shape metadata (repository, run id, PR number, base ref, head repository, head SHA, artifact name, schema version, and the computed preview target, or `null` for forks).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| **Publish** (`pr-preview-publish.yml`) | `workflow_run` on completion of the build workflow   | Trusted                | Never checks out PR content. The `gate` job (read-only) accepts a run only if it succeeded, was triggered by `pull_request`, belongs to this repository, and - critically - has a non-empty `workflow_run.pull_requests[]` array. GitHub only populates that array for **same-repository** pull requests, so forked PRs are excluded by construction before any privileged job runs. The `publish` job then downloads the artifact by run id, derives the trusted target directory `<preview_root>/pr-<number>` from base/default configuration (ignoring any target altered in the PR branch), re-validates every metadata field against this trusted context, re-fetches the PR's _current_ head SHA from the API, and only proceeds if it still matches the build's head SHA (an older completed run for an already-superseded commit is skipped, never published). Only then does it publish and post/update the PR comment. |
-| **Cleanup** (`pr-preview-cleanup.yml`) | `pull_request_target` (`closed`)                     | Trusted, metadata-only | Uses `pull_request_target` for a write-capable token even on forked PR closures, but only ever reads structured event fields (PR number) - it never checks out the pull request's head ref/SHA or executes any code from it. It checks out the default branch to resolve the trusted base `.storybook-pages.yml` configuration (computing `<preview_root>/pr-<number>`), checks out the trusted Pages branch, removes the directory if present (a no-op otherwise), and requests a Pages rebuild after a successful removal.                                                                                                                                                                                                                                                                                                                                                                                                     |
-| **Janitor** (`pr-preview-janitor.yml`) | `workflow_dispatch` or daily `schedule`              | Trusted                | Lists live open PR numbers via the API and removes any `<preview_root>/pr-<number>` directory whose PR is no longer open, plus any still-open PR's preview older than `preview_retention_days`. Only entries matching the strict `pr-<number>` name are ever considered; everything else at the Pages branch root (production output, named environments, unrelated files) is left untouched.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Stage                                  | Trigger                                              | Trust level            | What it can do                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| -------------------------------------- | ---------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Build** (`pr-preview-build.yml`)     | `pull_request` (`opened`, `synchronize`, `reopened`) | Untrusted              | `contents: read` only. No secrets, no `pages`/`pull-requests` permission, no cache shared across builds. Builds and validates the PR's actual code (including forks), then uploads a single artifact bundling the static output with signed-shape metadata (repository, run id, PR number, base ref, head repository, head SHA, artifact name, schema version, and the computed preview target, or `null` for forks).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| **Publish** (`pr-preview-publish.yml`) | `workflow_run` on completion of the build workflow   | Trusted                | Never checks out PR content. The `gate` job (read-only) accepts a run only if it succeeded, was triggered by `pull_request`, belongs to this repository, and - critically - has a non-empty `workflow_run.pull_requests[]` array. GitHub only populates that array for **same-repository** pull requests, so forked PRs are excluded by construction before any privileged job runs. The `publish` job then downloads the artifact by run id, derives the trusted target directory `<preview_root>/pr-<number>` from base/default configuration (ignoring any target altered in the PR branch), re-validates every metadata field against this trusted context, and compares the build's head SHA with the PR's _current_ head SHA that the `gate` job fetched from the API before the publish job waited in the Pages write queue. It only proceeds if they match (a run whose commit was already superseded at that point is skipped, never published). Only then does it publish and post/update the PR comment. |
+| **Cleanup** (`pr-preview-cleanup.yml`) | `pull_request_target` (`closed`)                     | Trusted, metadata-only | Uses `pull_request_target` for a write-capable token even on forked PR closures, but only ever reads structured event fields (PR number) - it never checks out the pull request's head ref/SHA or executes any code from it. It checks out the default branch to resolve the trusted base `.storybook-pages.yml` configuration (computing `<preview_root>/pr-<number>`), checks out the trusted Pages branch, removes the directory if present (a no-op otherwise), and requests a Pages rebuild after a successful removal.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **Janitor** (`pr-preview-janitor.yml`) | `workflow_dispatch` or daily `schedule`              | Trusted                | Lists live open PR numbers via the API and removes any `<preview_root>/pr-<number>` directory whose PR is no longer open, plus any still-open PR's preview older than `preview_retention_days`. Only entries matching the strict `pr-<number>` name are ever considered; everything else at the Pages branch root (production output, named environments, unrelated files) is left untouched.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
 ### Fork PRs
 
@@ -21,7 +21,17 @@ A pull request is treated as a fork whenever its head repository differs from th
 
 ### Stale-run protection
 
-Because multiple build runs can complete out of order (retries, re-runs, or a fast follow-up push), the publisher always compares the artifact's `headSha` against the pull request's **current** head SHA fetched live from the API at publish time, not against a cached value. A run whose commit is no longer the PR's head SHA is skipped with an explicit `skip-stale` status; it can never overwrite a newer preview.
+Because multiple build runs can complete out of order (retries, re-runs, or a fast follow-up push), the publisher always compares the artifact's `headSha` against the pull request's **current** head SHA, fetched live from the API by the `gate` job right before the publish job joins the Pages write queue, not against a cached value. A run whose commit is no longer the PR's head SHA at that point is skipped with an explicit `skip-stale` status. If a newer commit lands while an older publish is already waiting in the queue, the older one still publishes. The newer run's publish starts waiting later, so it normally runs after the older one and replaces the preview ([Concurrency](#concurrency) covers the queue order). Re-running only the publish job (**Re-run failed jobs** or **Re-run job**) reuses the `gate` job's earlier head SHA snapshot, so re-run all jobs or the build instead.
+
+### Concurrency
+
+The publish, cleanup and janitor workflows and the reusable deploy workflow all write the Pages branch, so they share one concurrency group, `storybook-pages-<owner>/<repo>`, with `cancel-in-progress: false` and `queue: max`. One writer runs at a time. Up to 100 more wait and run first in, first out by when each run started waiting (not by when it was triggered; GitHub notes that ordering is not guaranteed).
+
+- Without `queue: max`, GitHub keeps only one pending run per group and cancels it as soon as another writer queues (`Canceling since a higher priority waiting request for storybook-pages-<owner>/<repo> exists`). In v1.11.0 and earlier this dropped most previews and cleanups when several PRs built at once.
+- When 100 runs are already waiting, GitHub cancels any further run.
+- `queue: max` cannot be combined with `cancel-in-progress: true`; GitHub rejects the workflow.
+- Your own workflows that join the group, such as the [directory pipeline](usage.md#option-3-trusted-directory-mode-pipeline-branch-backed), must also set `queue: max`. Do not add the group to a workflow that only calls these reusable workflows: the called jobs already join it.
+- Custom jobs that call the composite actions directly (`preview-publisher`, `preview-cleanup`, `preview-janitor`, or `publisher` for directory mode) must join the same `storybook-pages-${{ github.repository }}` group with `cancel-in-progress: false` and `queue: max`. Otherwise they rely only on the push retries, and a janitor running at the same time can delete a fresh preview: when its push is rejected, it re-applies the removals it planned from the branch and open PRs it read earlier.
 
 ### The preview comment
 
@@ -31,6 +41,7 @@ The PR preview comment provides a rich overview for reviewers:
 
 - **Live Badge Row**: Real-time badges for Coverage %, Stories count, Documented Components count, and Build Status.
 - **Metrics & Coverage Comparison Table**: Compares Base branch vs PR Preview metrics with computed diff deltas (e.g., `+19%` 🟢 component coverage improvement, `+10` stories 📈).
+- **Bundle Size** (opt-in): When the build enables `audit_bundle_size` on `preview-build`, the comment includes a bundle size table, recomputed by the trusted publisher and compared with the base branch. See [Bundle size](bundle-size.md).
 - **Collapsible Growth Chart**: An expandable `<details>` section embedding the hand-drawn `stats/history.svg` growth graph.
 - **Provenance Footer**: Built commit SHA, workflow run link, and clear update timestamping.
 
@@ -92,12 +103,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      # Replace with your real install/build commands (or the main `Archetipo95/storybook-github-pages@v1.9.14`
+      # Replace with your real install/build commands (or the main `Archetipo95/storybook-github-pages@v1.11.0`
       # composite action with `publish: 'false'`) so `storybook-static` contains your actual build output.
       - run: npm ci && npm run build-storybook
 
       - name: Package and upload preview bundle
-        uses: Archetipo95/storybook-github-pages/preview-build@v1.9.14
+        uses: Archetipo95/storybook-github-pages/preview-build@v1.11.0
         with:
           source_path: storybook-static # your built static Storybook output directory
 ```
@@ -120,7 +131,7 @@ permissions:
 
 jobs:
   publish:
-    uses: Archetipo95/storybook-github-pages/.github/workflows/pr-preview-publish.yml@v1.9.14
+    uses: Archetipo95/storybook-github-pages/.github/workflows/pr-preview-publish.yml@v1.11.0
     with:
       pages_branch: 'gh-pages'
 ```
@@ -165,7 +176,7 @@ permissions:
 
 jobs:
   publish:
-    uses: Archetipo95/storybook-github-pages/.github/workflows/pr-preview-publish.yml@v1.9.14
+    uses: Archetipo95/storybook-github-pages/.github/workflows/pr-preview-publish.yml@v1.11.0
     with:
       preview_root: '' # optional: override preview root; defaults to .storybook-pages.yml or 'pr-preview'
       pages_branch: 'gh-pages'
@@ -210,7 +221,7 @@ steps:
       token: ${{ secrets.GITHUB_TOKEN }}
 
   - name: Validate provenance and publish preview
-    uses: Archetipo95/storybook-github-pages/preview-publisher@v1.9.14
+    uses: Archetipo95/storybook-github-pages/preview-publisher@v1.11.0
     with:
       bundle_dir: ${{ runner.temp }}/preview-bundle
       pages_repo: pages-repo
@@ -253,7 +264,7 @@ permissions:
 
 jobs:
   cleanup:
-    uses: Archetipo95/storybook-github-pages/.github/workflows/pr-preview-cleanup.yml@v1.9.14
+    uses: Archetipo95/storybook-github-pages/.github/workflows/pr-preview-cleanup.yml@v1.11.0
     with:
       preview_root: '' # optional: override preview root; defaults to .storybook-pages.yml or 'pr-preview'
       pages_branch: 'gh-pages'
@@ -270,7 +281,7 @@ steps:
       path: pages-repo
       token: ${{ secrets.GITHUB_TOKEN }}
   - name: Remove preview directory
-    uses: Archetipo95/storybook-github-pages/preview-cleanup@v1.9.14
+    uses: Archetipo95/storybook-github-pages/preview-cleanup@v1.11.0
     with:
       pages_repo: pages-repo
       pages_branch: gh-pages
@@ -301,7 +312,7 @@ permissions:
 
 jobs:
   janitor:
-    uses: Archetipo95/storybook-github-pages/.github/workflows/pr-preview-janitor.yml@v1.9.14
+    uses: Archetipo95/storybook-github-pages/.github/workflows/pr-preview-janitor.yml@v1.11.0
     with:
       preview_root: ''
       pages_branch: 'gh-pages'
@@ -319,7 +330,7 @@ steps:
       path: pages-repo
       token: ${{ secrets.GITHUB_TOKEN }}
   - name: Prune stale previews
-    uses: Archetipo95/storybook-github-pages/preview-janitor@v1.9.14
+    uses: Archetipo95/storybook-github-pages/preview-janitor@v1.11.0
     with:
       pages_repo: pages-repo
       pages_branch: gh-pages

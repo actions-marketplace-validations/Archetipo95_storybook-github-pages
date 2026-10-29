@@ -28,7 +28,8 @@ body > *:not(#storybook-passcode-gate) { visibility: hidden !important; }
   <form>
     <h1>Private Storybook</h1>
     <p>Enter the passcode to continue.</p>
-    <input type="password" autocomplete="current-password" aria-label="Passcode" required>
+    <input type="text" name="username" autocomplete="username" value="storybook" hidden aria-hidden="true" tabindex="-1">
+    <input type="password" name="password" autocomplete="current-password" aria-label="Passcode" required>
     <button type="submit">Continue</button>
     <div role="alert" aria-live="polite"></div>
   </form>
@@ -36,15 +37,17 @@ body > *:not(#storybook-passcode-gate) { visibility: hidden !important; }
 <script id="storybook-passcode-gate-script">
 (() => {
   const config = ${config};
-  const key = 'storybook-passcode-authenticated';
+  // Scope the unlock to this passcode so other gated Storybooks on the same origin stay locked.
+  const key = 'storybook-passcode-authenticated:' + config.hash.slice(0, 16);
   const gate = document.getElementById('storybook-passcode-gate');
   const form = gate.querySelector('form');
-  const input = form.querySelector('input');
+  const input = form.querySelector('input[type="password"]');
+  const unlockMessage = 'storybook-passcode-unlocked';
   const alert = form.querySelector('[role="alert"]');
   const now = () => Date.now();
   const isValid = () => {
     try {
-      return Number(sessionStorage.getItem(key)) > now();
+      return Number(localStorage.getItem(key)) > now();
     } catch {
       return false;
     }
@@ -52,6 +55,22 @@ body > *:not(#storybook-passcode-gate) { visibility: hidden !important; }
   const reveal = () => { gate.remove(); document.querySelector('#storybook-passcode-gate-style')?.remove(); };
   const digest = async value => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)))).map(byte => byte.toString(16).padStart(2, '0')).join('');
   if (isValid()) reveal();
+  // The manager and its same-origin preview iframe gate independently; reveal the iframe once the manager unlocks.
+  window.addEventListener('storage', event => {
+    if (event.key === key && isValid()) reveal();
+  });
+  window.addEventListener('message', event => {
+    if (event.source === window.parent && event.source !== window && event.origin === location.origin && event.data === unlockMessage) reveal();
+  });
+  const notifyFrames = () => {
+    for (const frame of document.querySelectorAll('iframe')) {
+      try {
+        frame.contentWindow?.postMessage(unlockMessage, location.origin);
+      } catch {
+        // Ignore frames that cannot receive messages.
+      }
+    }
+  };
   form.addEventListener('submit', async event => {
     event.preventDefault();
     alert.textContent = '';
@@ -62,11 +81,12 @@ body > *:not(#storybook-passcode-gate) { visibility: hidden !important; }
         return;
       }
       try {
-        sessionStorage.setItem(key, String(now() + config.sessionMs));
+        localStorage.setItem(key, String(now() + config.sessionMs));
       } catch {
         // Reveal this page even when browser storage is blocked.
       }
       reveal();
+      notifyFrames();
     } catch {
       alert.textContent = 'Passcode validation is unavailable in this browser.';
     }

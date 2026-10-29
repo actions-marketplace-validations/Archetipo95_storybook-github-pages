@@ -24,7 +24,7 @@
 ### 4. Stale Run Skipped (`skip-stale`)
 
 - **Symptom**: `pr-preview-publish.yml` outputs `status: skipped` with a stale run notice.
-- **Explanation**: The publisher live-checks the pull request's current head SHA against the build artifact's head SHA. If a newer commit was pushed while an older run was building, the older run skips publishing to avoid overwriting newer code.
+- **Explanation**: The publish workflow's `gate` job fetches the pull request's current head SHA, and the publish job compares it with the build artifact's head SHA. If a newer commit was pushed while an older run was building, the older run skips publishing to avoid overwriting newer code.
 
 ### 5. Artifact Validation Failures
 
@@ -56,9 +56,9 @@
 
 ### 8. Reusable Workflow Permissions & Concurrency Constraints
 
-- **Symptom**: Workflow fails to trigger, encounters `403 Resource not accessible by integration`, or fails with workflow syntax errors when calling reusable workflows (`workflow_call`).
+- **Symptom**: Workflow fails to trigger, encounters `403 Resource not accessible by integration`, fails workflow validation, or a Pages write never starts when calling reusable workflows (`workflow_call`).
 - **Causes & Solutions**:
-  - **Top-Level Concurrency**: GitHub Actions rejects top-level `concurrency:` on reusable workflows (`workflow_call`). Concurrency is managed at the job level inside our reusable workflows. Caller workflows should not declare workflow-level concurrency on caller files that invoke `workflow_call`.
+  - **Concurrency**: The reusable workflows already join the shared `storybook-pages-<owner>/<repo>` group with `cancel-in-progress: false` and `queue: max`: `deploy-storybook.yml` at workflow level, and `pr-preview-publish.yml`, `pr-preview-cleanup.yml` and `pr-preview-janitor.yml` on the job that writes the Pages branch. A called workflow gets the caller's `github` context, so the group already names your repository. Do not declare the same group on the workflow or job that calls them: the caller would hold the group that the called jobs wait for. If you set `queue: max` on a group of your own, keep `cancel-in-progress: false`; GitHub rejects the combination with `cancel-in-progress: true`. See [Concurrency](pr-previews.md#concurrency).
   - **Required Caller Permissions**: When invoking `pr-preview-publish.yml` via `workflow_call`, ensure your caller workflow grants the required permissions:
     ```yaml
     permissions:
@@ -77,5 +77,16 @@
   - `storybook-github-pages` automatically injects a `.nojekyll` file at the root of `gh-pages` and within build bundles.
   - If using a custom deployment workflow, ensure `.nojekyll` exists at the root of the `gh-pages` branch.
   - Ensure your `.storybook/main.ts` configures `base: './'` in `viteFinal` as described in the [Modern Bundlers guide](bundlers.md).
+
+### 10. PR Preview Publish or Cleanup Cancelled (`Canceling since a higher priority waiting request ... exists`)
+
+- **Symptom**: A `pr-preview-publish.yml` or `pr-preview-cleanup.yml` run is cancelled with `Canceling since a higher priority waiting request for storybook-pages-<owner>/<repo> exists`. The preview URL returns 404 and no preview comment is posted, or a closed PR's preview stays until the janitor removes it. It happens most when several PRs build at once.
+- **Cause**: v1.11.0 and earlier used GitHub's default concurrency queue, which keeps only one pending run in the shared `storybook-pages-<owner>/<repo>` group and cancels it whenever another Pages writer queues.
+- **Solution**:
+  - Update the `pr-preview-publish.yml`, `pr-preview-cleanup.yml`, `pr-preview-janitor.yml` and `deploy-storybook.yml` refs to a release that sets `queue: max` on the group (see [Concurrency](pr-previews.md#concurrency)).
+  - Add `queue: max` to any workflow of your own that declares the `storybook-pages-${{ github.repository }}` group.
+  - To restore an open PR's missing preview, re-run the PR's latest `PR Preview Build` run, or open the cancelled publish run and choose **Re-run all jobs** (`gh run rerun <run-id>`) so the `gate` job re-reads the PR head. If the PR has moved on, that publish skips as `skip-stale`.
+  - Never use **Re-run failed jobs** (`gh run rerun <run-id> --failed`) on a publish run, and never re-run the `publish` job on its own (**Re-run job** on `publish`, or `gh run rerun --job <publish-job-id>`). Both reuse the head SHA the `gate` job fetched before the cancellation, so they can publish a stale commit over a newer preview.
+  - For a cancelled cleanup, run the janitor manually (`workflow_dispatch`) instead of re-running the cleanup. The janitor removes previews of PRs that are no longer open (plus open-PR previews older than `preview_retention_days`), so it keeps a reopened PR's fresh preview, while a re-run cleanup also deletes the preview of a reopened PR.
 
 ---

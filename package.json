@@ -1,6 +1,6 @@
 {
   "name": "storybook-github-pages",
-  "version": "1.9.14",
+  "version": "1.11.0",
   "description": "Deploy Storybook to GitHub Pages with secure reusable workflows and Bitovi compatibility",
   "main": "src/config.js",
   "type": "module",
@@ -16,7 +16,7 @@
     "generate-badges": "node src/generate-badges.js"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=24.0.0"
   },
   "repository": {
     "type": "git",
@@ -32,8 +32,8 @@
   "author": "Archetipo95",
   "license": "MIT",
   "devDependencies": {
-    "eslint": "^10.10.0",
+    "eslint": "^10.11.0",
     "globals": "^17.12.0",
-    "prettier": "^3.9.7"
+    "prettier": "^3.9.9"
   }
 }

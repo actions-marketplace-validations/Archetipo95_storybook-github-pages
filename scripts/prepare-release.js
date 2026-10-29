@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 const version = process.argv[2];
 
@@ -52,6 +53,33 @@ function releaseRefFiles() {
   ];
 }
 
+// Reusable workflows pin this repository's own composite actions to a commit
+// SHA. Move every pin to the commit this release is prepared from, so the
+// released workflows run the released code (the Release Tags workflow
+// refuses to tag when they differ).
+const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+const pinSha = git('rev-parse', 'HEAD');
+const uncommitted = git(
+  'status',
+  '--porcelain',
+  '--',
+  'src',
+  'publisher',
+  'preview-build',
+  'preview-publisher',
+  'preview-cleanup',
+  'preview-janitor'
+);
+if (uncommitted) {
+  console.error(
+    `Commit action and src changes before preparing ${tag}; internal pins must point at committed code:\n${uncommitted}`
+  );
+  process.exit(1);
+}
+for (const file of walkFiles('.github/workflows').filter(file => /\.ya?ml$/.test(file))) {
+  write(file, read(file).replace(/(Archetipo95\/storybook-github-pages\/[A-Za-z0-9_-]+@)[0-9a-f]{40}/g, `$1${pinSha}`));
+}
+
 updateJson('package.json', pkg => {
   pkg.version = version;
 });
@@ -91,4 +119,4 @@ if (!changelog.includes(`## [${version}]`)) {
   );
 }
 
-console.log(`Prepared ${tag}`);
+console.log(`Prepared ${tag} (internal action pins -> ${pinSha})`);

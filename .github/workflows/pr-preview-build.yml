@@ -71,3 +71,4 @@ jobs:
           source_path: 'test/fixtures/sample-storybook'
           preview_root: ${{ steps.config.outputs.preview_root }}
           smoke_test: 'true'
+          audit_bundle_size: 'true'

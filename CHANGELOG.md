@@ -9,6 +9,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Deprecated
+
+- `storybook-github-pages` is superseded by [storybook-github-swiss-knife](https://github.com/Archetipo95/storybook-github-swiss-knife), which includes the changes below in `v0.1.0`. This repository is archived; see its [migration guide](https://github.com/Archetipo95/storybook-github-swiss-knife/blob/main/docs/migration.md).
+
+### Changed
+
+- The reusable deploy workflow now queues deploys instead of replacing a pending deploy with the newest one. Deploys run one at a time, first in, first out by when each run started waiting (not by when it was triggered; GitHub notes that ordering is not guaranteed). If your own workflows use the `storybook-pages-<owner>/<repo>` concurrency group, add `queue: max` there too. Custom jobs that call the composite actions directly should join the group the same way ([Concurrency](docs/pr-previews.md#concurrency)).
+
+### Fixed
+
+- PR preview publishes, closed-PR cleanups and janitor runs are no longer cancelled when several Pages writers queue at once. The shared `storybook-pages-<owner>/<repo>` concurrency group kept only one pending run, so bursts of PR builds dropped most previews with `Canceling since a higher priority waiting request ... exists`, leaving a 404 and no preview comment. The group now sets `queue: max`: up to 100 runs wait and run one at a time, first in, first out by when each run started waiting (not by when it was triggered; GitHub notes that ordering is not guaranteed).
+
+## [1.11.0] - 2026-10-01
+
+### Added
+
+- **Bundle Size Audit**: New opt-in `audit_bundle_size` and `bundle_size_max_mb` inputs on the reusable workflow, composite action, `preview-build` action and `.storybook-pages.yml`. The audit (`src/audit-static.js`, no dependencies) reports total and estimated gzip size, a per-type breakdown (JavaScript, CSS, fonts, images and more) and the 10 largest assets in `$GITHUB_STEP_SUMMARY`, saves `audit/bundle-size.json`, and fails the build when the budget is exceeded. PR preview comments show the bundle size, recomputed by the trusted publisher and compared with the base branch.
+- `cname` input for directory mode that writes a validated `CNAME` at the Pages branch root. Artifact mode warns instead, because GitHub ignores `CNAME` files in Actions-deployed artifacts; configure the domain in repository Settings → Pages ([#45](https://github.com/Archetipo95/storybook-github-pages/issues/45)).
+- CodeQL code scanning for JavaScript and GitHub Actions workflows.
+- `Release Tags` workflow that creates the `vX.Y.Z` tag automatically when a version bump lands on `main` (after tests pass and the lockfile and changelog agree) and keeps the major tag on the newest release.
+- Test that fails when a `run:` script interpolates `${{ }}` values directly instead of passing them through `env:`.
+- Tests that fail when a workflow passes an input its pinned internal action does not declare, and (at release time) when an internal pin runs older action or `src/` code than the release.
+
+### Changed
+
+- **Node.js 24 is now the runtime.** The composite action and the reusable deploy workflow install Node.js 24 (was 20, which reached end of life in April 2026) before running your install and build commands. Storybook builds run by this action must support Node.js 24. `engines.node` is now `>=24.0.0`.
+- The reusable deploy, PR preview publish, cleanup, and janitor workflows now pin their internal actions to the v1.11.0 code. Previously they ran code from earlier releases, so the reusable workflows did not yet include the CNAME fix, the PR-comment bundle size, or the janitor and git-argument hardening.
+- `npm run prepare-release` moves internal action pins to the release base commit automatically.
+
+### Fixed
+
+- Directory mode root publishes no longer delete the Pages branch's `CNAME` file, which could reset the custom domain and break certificate renewal. Set `preserve_cname: false` to restore the previous behaviour ([#45](https://github.com/Archetipo95/storybook-github-pages/issues/45)).
+- Pass the custom install command and deploy-workflow smoke-test/`.nojekyll` paths to shell steps through `env:` instead of interpolating them into the script source.
+- Composite actions read their install path from `$GITHUB_ACTION_PATH` instead of interpolating `${{ github.action_path }}` into shell scripts.
+- Reject relative directories that normalize to `..` (for example `feature/../..`) in target, preview-root, and base-ref resolution.
+- `.storybook-pages.yml` keys `__proto__`, `constructor`, and `prototype` are rejected instead of polluting `Object.prototype`.
+- Pages branch names starting with `-` are rejected, and the git branch writer refuses unsafe branch names before running `git`.
+- Base-ref slash trimming runs in linear time instead of using a regex that is slow on long runs of `/`.
+- Preview janitor no longer fails the sweep when it cannot update a preview comment's expiration note.
+
+## [1.10.0] - 2026-10-01
+
+### Changed
+
+- Update `actions/cache` from v4.2.3 to v6.1.0 in the reusable deploy workflow (requires Actions Runner 2.327.1+ on self-hosted runners).
+- Update the reusable deploy workflow's internal `publisher` pin to v1.9.14.
+- Update the PR preview janitor workflow's internal `preview-janitor` pin to v1.9.6.
+- Update dev dependencies: eslint 10.11.0, prettier 3.9.9.
+
+### Fixed
+
+- **Passcode Gate Unlock Across Frames and Tabs**: Unlocking the manager now also reveals the same-origin story preview iframe (via the `storage` event, with a same-origin `postMessage` fallback), so the canvas no longer stays gated until a reload. The unlock expiry is stored in `localStorage`, so `passcode_session_hours` applies across tabs and browser restarts. The gate form also includes a hidden username field so password managers can save the passcode.
+
 ## [1.9.14] - 2026-09-25
 
 ### Fixed

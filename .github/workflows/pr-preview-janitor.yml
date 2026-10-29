@@ -51,6 +51,7 @@ jobs:
     concurrency:
       group: storybook-pages-${{ github.repository }}
       cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -172,7 +173,7 @@ jobs:
 
       - name: Prune stale preview directories
         if: steps.branch_check.outputs.exists == 'true'
-        uses: Archetipo95/storybook-github-pages/preview-janitor@1a922a815952feaeb895f65b7f5dbf673c2fd204
+        uses: Archetipo95/storybook-github-pages/preview-janitor@227fd45a195eb7110996f3843277a97b5820b489
         with:
           pages_repo: ${{ github.workspace }}/pages-repo
           pages_branch: ${{ steps.config.outputs.pages_branch || inputs.pages_branch || 'gh-pages' }}

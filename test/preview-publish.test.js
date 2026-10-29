@@ -4,7 +4,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { readBundleMetadata, publishPreview, resolveBaseMetricsPath } from '../src/preview-publish.js';
+import {
+  readBundleMetadata,
+  publishPreview,
+  resolveBaseMetricsPath,
+  collectPreviewAudits
+} from '../src/preview-publish.js';
 import { buildPreviewMetadata, digestDirectory } from '../src/preview-metadata.js';
 import { buildMarker } from '../src/preview-comment.js';
 
@@ -636,5 +641,81 @@ test('publishPreview honors an explicit ENVIRONMENT_URL override for both pendin
     if (originalEnvironmentUrl === undefined) delete process.env.ENVIRONMENT_URL;
     else process.env.ENVIRONMENT_URL = originalEnvironmentUrl;
     global.fetch = originalFetch;
+  }
+});
+
+test('collectPreviewAudits recomputes bundle sizes instead of trusting the artifact report', () => {
+  const contentDir = makeTempDir('preview-audit-content-');
+  fs.writeFileSync(path.join(contentDir, 'index.html'), '<html>preview</html>');
+  fs.writeFileSync(path.join(contentDir, 'main.js'), 'console.log(1);');
+  fs.mkdirSync(path.join(contentDir, 'badges'));
+  fs.writeFileSync(path.join(contentDir, 'badges', 'stories.svg'), '<svg/>');
+  fs.mkdirSync(path.join(contentDir, 'audit'));
+  fs.writeFileSync(
+    path.join(contentDir, 'audit', 'bundle-size.json'),
+    JSON.stringify({ totalBytes: 1, totalGzipBytes: 1, totalFiles: 1, budget: { maxMb: 2 } })
+  );
+
+  const basePagesRepo = makeTempDir('preview-audit-base-');
+  fs.mkdirSync(path.join(basePagesRepo, 'audit'));
+  fs.writeFileSync(
+    path.join(basePagesRepo, 'audit', 'bundle-size.json'),
+    JSON.stringify({ totalBytes: 10, totalGzipBytes: 5, totalFiles: 1 })
+  );
+
+  const audits = collectPreviewAudits({ contentDir, basePagesRepo });
+  assert.equal(audits.bundleReport.totalFiles, 2, 'audit and badges directories are excluded');
+  assert.equal(
+    audits.bundleReport.totalBytes,
+    '<html>preview</html>'.length + 'console.log(1);'.length,
+    'sizes are recomputed from the verified content'
+  );
+  assert.equal(audits.bundleReport.budget.maxMb, 2);
+  assert.equal(audits.baseBundleReport.totalBytes, 10);
+});
+
+test('collectPreviewAudits returns nothing when the build did not audit', () => {
+  const contentDir = makeTempDir('preview-audit-none-');
+  fs.writeFileSync(path.join(contentDir, 'index.html'), '<html>preview</html>');
+  assert.deepEqual(collectPreviewAudits({ contentDir }), {
+    bundleReport: null,
+    baseBundleReport: null
+  });
+});
+
+test('collectPreviewAudits excludes a custom badges directory from the recomputed size', () => {
+  const contentDir = makeTempDir('preview-audit-badges-');
+  fs.writeFileSync(path.join(contentDir, 'index.html'), '<html>preview</html>');
+  fs.mkdirSync(path.join(contentDir, 'shields'));
+  fs.writeFileSync(path.join(contentDir, 'shields', 'stories.svg'), '<svg/>');
+  fs.mkdirSync(path.join(contentDir, 'audit'));
+  fs.writeFileSync(path.join(contentDir, 'audit', 'bundle-size.json'), '{}');
+
+  assert.equal(collectPreviewAudits({ contentDir }).bundleReport.totalFiles, 2);
+  assert.equal(collectPreviewAudits({ contentDir, badgesDirectory: 'shields' }).bundleReport.totalFiles, 1);
+});
+
+test('collectPreviewAudits never throws; a failed audit only drops the comment section', t => {
+  if (process.getuid?.() === 0) {
+    t.skip('permission checks do not apply to root');
+    return;
+  }
+  const contentDir = makeTempDir('preview-audit-error-');
+  fs.writeFileSync(path.join(contentDir, 'index.html'), '<html>preview</html>');
+  fs.mkdirSync(path.join(contentDir, 'audit'));
+  fs.writeFileSync(path.join(contentDir, 'audit', 'bundle-size.json'), '{}');
+  const locked = path.join(contentDir, 'locked');
+  fs.mkdirSync(locked);
+  fs.chmodSync(locked, 0o000);
+
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = message => warnings.push(message);
+  try {
+    assert.deepEqual(collectPreviewAudits({ contentDir }), { bundleReport: null, baseBundleReport: null });
+    assert.match(warnings[0], /Bundle size audit skipped/);
+  } finally {
+    console.warn = originalWarn;
+    fs.chmodSync(locked, 0o755);
   }
 });

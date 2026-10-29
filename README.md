@@ -3,6 +3,14 @@
 [![CI](https://github.com/Archetipo95/storybook-github-pages/actions/workflows/ci.yml/badge.svg)](https://github.com/Archetipo95/storybook-github-pages/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+> [!IMPORTANT]
+> **This project has moved to [storybook-github-swiss-knife](https://github.com/Archetipo95/storybook-github-swiss-knife).**
+> It keeps every input of this action and adds visual regression and accessibility checks. This
+> repository is archived: existing `v1.x` tags and SHA pins keep working, but get no fixes. Follow
+> the [migration guide](https://github.com/Archetipo95/storybook-github-swiss-knife/blob/main/docs/migration.md)
+> to switch; it is a find-and-replace of the repository name plus the `actions/` prefix for the
+> composite actions.
+
 Deploy Storybook to GitHub Pages with secure reusable workflows, PR previews, badges, coverage stats, and growth graphs.
 
 > See [Archetipo95/storybook-vue-demo](https://github.com/Archetipo95/storybook-vue-demo) for a live Vue 3 + Storybook 10 example.
@@ -32,7 +40,7 @@ permissions:
 
 jobs:
   deploy-storybook:
-    uses: Archetipo95/storybook-github-pages/.github/workflows/deploy-storybook.yml@v1.9.14
+    uses: Archetipo95/storybook-github-pages/.github/workflows/deploy-storybook.yml@v1.11.0
     with:
       path: 'storybook-static'
       package_manager: 'npm'
@@ -83,6 +91,7 @@ See [PR previews](docs/pr-previews.md).
 | -------------------------------------------------------- | -------------------------------------------- |
 | Turnkey deploy, composite action, directory mode, inputs | [Usage](docs/usage.md)                       |
 | Badges, component coverage, growth chart                 | [Badges and stats](docs/badges-and-stats.md) |
+| Bundle size audit and budget                             | [Bundle size](docs/bundle-size.md)           |
 | PR preview build/publish/cleanup/janitor                 | [PR previews](docs/pr-previews.md)           |
 | Permissions and security model                           | [Security](docs/security.md)                 |
 | Bitovi migration                                         | [Migration](docs/migration.md)               |

@@ -122,7 +122,7 @@ test('preview-publisher action.yml schema, inputs, and outputs are well-formed',
   assert.match(content, /action:/);
 
   // Implementation wiring
-  assert.match(content, /node "\$\{\{ github\.action_path \}\}\/\.\.\/src\/preview-publish\.js"/);
+  assert.match(content, /node "\$GITHUB_ACTION_PATH\/\.\.\/src\/preview-publish\.js"/);
   assert.match(
     fs.readFileSync(path.join(process.cwd(), 'src/preview-publish.js'), 'utf8'),
     /triggerPagesRebuild: process\.env\.TRIGGER_PAGES_REBUILD === 'true'/

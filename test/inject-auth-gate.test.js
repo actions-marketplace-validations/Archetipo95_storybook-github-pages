@@ -23,7 +23,13 @@ test('injectAuthGate protects entry documents and is idempotent', async () => {
     assert.match(index, /sessionMs":43200000/);
     assert.match(index, /name="robots" content="noindex, nofollow, noarchive"/);
     assert.match(await fs.readFile(path.join(staticDir, 'robots.txt'), 'utf8'), /Disallow: \//);
+    assert.match(index, /localStorage\.setItem\(key/);
+    assert.doesNotMatch(index, /sessionStorage/);
+    assert.match(index, /storybook-passcode-authenticated:' \+ config\.hash\.slice\(0, 16\)/);
+    assert.match(index, /autocomplete="username"/);
     assert.match(iframe, /storybook-passcode-gate-script/);
+    assert.match(iframe, /addEventListener\('storage'/);
+    assert.match(iframe, /event\.origin === location\.origin/);
     assert.match(iframe, /name="robots" content="noindex, nofollow, noarchive"/);
     await injectAuthGate(staticDir, { passcodeHash: hash });
     assert.equal(

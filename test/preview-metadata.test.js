@@ -151,3 +151,13 @@ test('decidePreviewAction rejects a malformed currentHeadSha rather than compari
   const metadata = sameRepoMetadata();
   assert.throws(() => decidePreviewAction({ metadata, currentHeadSha: 'not-a-sha' }), /currentHeadSha/);
 });
+
+test('validatePreviewMetadata rejects metadata targets that escape or overwrite protected paths', () => {
+  for (const target of ['../main', 'pr-preview/../..', '.git/hooks', '.github/workflows', '/etc', 'C:/x']) {
+    assert.throws(
+      () => validatePreviewMetadata({ ...sameRepoMetadata(), target }),
+      /metadata\.target/,
+      `expected target ${target} to be rejected`
+    );
+  }
+});

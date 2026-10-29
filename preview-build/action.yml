@@ -95,6 +95,14 @@ inputs:
     description: 'Per-page Playwright navigation timeout in milliseconds'
     required: false
     default: '30000'
+  audit_bundle_size:
+    description: 'Whether to audit static asset sizes; the trusted publisher then adds a bundle size table to the PR comment'
+    required: false
+    default: 'false'
+  bundle_size_max_mb:
+    description: 'Optional total static output budget in megabytes; the build fails when the audit exceeds it'
+    required: false
+    default: ''
 
 outputs:
   artifact_name:
@@ -153,14 +161,25 @@ runs:
         WORKSPACE_ROOT: ${{ github.workspace }}
         SMOKE_TEST_STORIES: ${{ inputs.smoke_test_stories }}
         SMOKE_TEST_TIMEOUT_MS: ${{ inputs.smoke_test_timeout_ms }}
-      run: node "${{ github.action_path }}/../src/smoke-test.js" "$SOURCE_PATH" "$WORKSPACE_ROOT" "$SMOKE_TEST_STORIES" "$SMOKE_TEST_TIMEOUT_MS"
+      run: node "$GITHUB_ACTION_PATH/../src/smoke-test.js" "$SOURCE_PATH" "$WORKSPACE_ROOT" "$SMOKE_TEST_STORIES" "$SMOKE_TEST_TIMEOUT_MS"
 
     - name: Validate static Storybook output
       shell: bash
       env:
         SOURCE_PATH: ${{ inputs.source_path }}
         WORKSPACE_ROOT: ${{ github.workspace }}
-      run: node "${{ github.action_path }}/../src/validate-artifact.js" "$SOURCE_PATH" "$WORKSPACE_ROOT"
+      run: node "$GITHUB_ACTION_PATH/../src/validate-artifact.js" "$SOURCE_PATH" "$WORKSPACE_ROOT"
+
+    # The audit runs before badges/stats are written so it measures the
+    # Storybook build output only.
+    - name: Audit Storybook bundle size
+      if: ${{ inputs.audit_bundle_size == 'true' }}
+      shell: bash
+      env:
+        SOURCE_PATH: ${{ inputs.source_path }}
+        SB_BUNDLE_SIZE_MAX_MB: ${{ inputs.bundle_size_max_mb }}
+        WORKSPACE_ROOT: ${{ github.workspace }}
+      run: node "$GITHUB_ACTION_PATH/../src/audit-static.js" "$SOURCE_PATH" "$WORKSPACE_ROOT"
 
     - name: Generate Storybook badges
       if: ${{ inputs.generate_badges != 'false' }}
@@ -173,7 +192,7 @@ runs:
         SB_COVERAGE_IGNORE_PATHS: ${{ inputs.coverage_ignore_paths || '' }}
         WORKSPACE_ROOT: ${{ github.workspace }}
         GITHUB_SHA: ${{ inputs.head_sha || github.sha }}
-      run: node "${{ github.action_path }}/../src/generate-badges.js" "$SOURCE_PATH" "$WORKSPACE_ROOT"
+      run: node "$GITHUB_ACTION_PATH/../src/generate-badges.js" "$SOURCE_PATH" "$WORKSPACE_ROOT"
 
     - name: Generate Storybook growth graph
       if: ${{ inputs.generate_stats_graph != 'false' }}
@@ -185,7 +204,7 @@ runs:
         SB_COVERAGE_IGNORE_PATHS: ${{ inputs.coverage_ignore_paths || '' }}
         WORKSPACE_ROOT: ${{ github.workspace }}
         GITHUB_SHA: ${{ inputs.head_sha }}
-      run: node "${{ github.action_path }}/../src/generate-stats.js" "$SOURCE_PATH" "$WORKSPACE_ROOT"
+      run: node "$GITHUB_ACTION_PATH/../src/generate-stats.js" "$SOURCE_PATH" "$WORKSPACE_ROOT"
 
     - name: Ensure .nojekyll exists
       shell: bash
@@ -213,7 +232,7 @@ runs:
         EVENT_NAME: ${{ inputs.event_name }}
         BUNDLE_DIR: ${{ steps.config.outputs.bundle_dir }}
       run: |
-        node "${{ github.action_path }}/../src/preview-metadata.js" "$BUNDLE_DIR"
+        node "$GITHUB_ACTION_PATH/../src/preview-metadata.js" "$BUNDLE_DIR"
         echo "bundle_dir=$BUNDLE_DIR" >> "$GITHUB_OUTPUT"
 
     - name: Upload preview bundle artifact

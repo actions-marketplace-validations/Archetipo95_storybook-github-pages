@@ -14,6 +14,43 @@ import { buildCommentBody, upsertPreviewComment } from './preview-comment.js';
 import { createDeployment, updateDeploymentStatus } from './github-deployments.js';
 import { injectAuthGate } from './inject-auth-gate.js';
 import { generateStatsGraph } from './generate-stats.js';
+import { auditBundleSize, readBundleReport } from './audit-static.js';
+
+/**
+ * Builds the bundle size inputs for the PR comment. The untrusted build only
+ * signals that auditing was enabled by shipping `audit/bundle-size.json`; the
+ * sizes themselves are recomputed here from the digest-verified content
+ * (before the publisher adds its own files) rather than trusted.
+ *
+ * The audit only feeds the comment, so it never throws: a failure is logged
+ * and the comment is posted without the bundle size section.
+ */
+export function collectPreviewAudits({
+  contentDir,
+  basePagesRepo = null,
+  badgesDirectory = 'badges',
+  statsDirectory = 'stats'
+}) {
+  try {
+    let bundleReport = null;
+    const artifactBundleReport = readBundleReport(contentDir);
+    if (artifactBundleReport) {
+      const maxMb = artifactBundleReport.budget?.maxMb;
+      bundleReport = auditBundleSize({
+        staticDir: contentDir,
+        maxMb: Number.isFinite(maxMb) && maxMb > 0 ? maxMb : null,
+        // Generated metadata, not Storybook output; the build audits before
+        // writing these, so exclude them to keep both numbers comparable.
+        excludeDirectories: [badgesDirectory, statsDirectory]
+      });
+    }
+    const baseBundleReport = bundleReport && basePagesRepo ? readBundleReport(basePagesRepo) : null;
+    return { bundleReport, baseBundleReport };
+  } catch (error) {
+    console.warn(`Bundle size audit skipped: ${error.message}`);
+    return { bundleReport: null, baseBundleReport: null };
+  }
+}
 
 /**
  * Reads and parses the metadata file bundled inside the downloaded build
@@ -96,6 +133,7 @@ export async function publishPreview({
   basePath = '',
   triggerPagesRebuild = false,
   generateStatsGraph: generateStatsGraphEnabled = true,
+  badgesDirectory = 'badges',
   statsDirectory = 'stats',
   enablePasscodeGate = false,
   passcodeHash = '',
@@ -178,6 +216,13 @@ export async function publishPreview({
   const baseDirectory = resolveBaseDirectoryForRef(baseRef, { default_branch: 'main' });
   const basePagesRepo = baseDirectory ? path.join(pagesRepo, baseDirectory) : pagesRepo;
   const baseMetricsPath = pagesRepo ? resolveBaseMetricsPath({ pagesRepo, baseRef, defaultBranch: 'main' }) : null;
+
+  const audits = collectPreviewAudits({
+    contentDir,
+    basePagesRepo: pagesRepo ? basePagesRepo : null,
+    badgesDirectory,
+    statsDirectory
+  });
 
   let publishResult;
   try {
@@ -295,7 +340,8 @@ export async function publishPreview({
         metrics,
         baseMetrics,
         hasBadges,
-        hasStatsGraph
+        hasStatsGraph,
+        ...audits
       });
       commentResult = await upsertPreviewComment({ token, repository, prNumber: metadata.prNumber, body });
     } catch (error) {
@@ -346,6 +392,7 @@ if (process.argv[1] && process.argv[1].endsWith('preview-publish.js')) {
     basePath: process.env.BASE_PATH || '',
     triggerPagesRebuild: process.env.TRIGGER_PAGES_REBUILD === 'true',
     generateStatsGraph: process.env.GENERATE_STATS_GRAPH !== 'false',
+    badgesDirectory: process.env.SB_BADGES_DIRECTORY || 'badges',
     statsDirectory: process.env.SB_STATS_DIRECTORY || 'stats',
     enablePasscodeGate: process.env.ENABLE_PASSCODE_GATE === 'true',
     passcodeHash: process.env.PASSCODE_HASH || '',

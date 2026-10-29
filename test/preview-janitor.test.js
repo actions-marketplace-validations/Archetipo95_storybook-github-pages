@@ -4,7 +4,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { classifyPreviewEntries, parsePreviewDirName, runJanitor } from '../src/preview-janitor.js';
+import {
+  classifyPreviewEntries,
+  parsePreviewDirName,
+  requestJanitorCommentUpdate,
+  runJanitor
+} from '../src/preview-janitor.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -279,4 +284,31 @@ test('runJanitor supports repository-root layout: removes only closed-PR pr-<num
   } finally {
     global.fetch = originalFetch;
   }
+});
+
+test('requestJanitorCommentUpdate reports comment update failures without failing the sweep', async () => {
+  const calls = [];
+  const ok = await requestJanitorCommentUpdate({
+    token: 'token',
+    repository: 'octo/widgets',
+    prNumber: 9,
+    warningDays: 2,
+    updateStatus: async args => calls.push(args)
+  });
+  assert.deepEqual(ok, { ok: true });
+  assert.deepEqual(calls, [
+    { token: 'token', repository: 'octo/widgets', prNumber: 9, expired: false, warningDays: 2 }
+  ]);
+
+  const failed = await requestJanitorCommentUpdate({
+    token: 'token',
+    repository: 'octo/widgets',
+    prNumber: 9,
+    expired: true,
+    updateStatus: async () => {
+      throw new Error('Resource not accessible by integration');
+    }
+  });
+  assert.equal(failed.ok, false);
+  assert.match(failed.message, /PR #9: Resource not accessible by integration/);
 });
